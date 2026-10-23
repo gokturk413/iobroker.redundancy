@@ -1,6 +1,6 @@
 # ioBroker.redundancy
 
-![Logo](admin/redundancy.png)
+![Logo](admin/redundancy.svg)
 
 Redundant SCADA servers for ioBroker. Two (or more) ioBroker hosts share their objects and
 states through Redis with Sentinel; when the primary server fails, the standby takes over

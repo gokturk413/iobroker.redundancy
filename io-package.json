@@ -36,8 +36,8 @@
       "link": "https://github.com/gokturk413/iobroker.redundancy/blob/main/LICENSE"
     },
     "platform": "Javascript/Node.js",
-    "icon": "redundancy.png",
-    "extIcon": "https://raw.githubusercontent.com/gokturk413/iobroker.redundancy/main/admin/redundancy.png",
+    "icon": "redundancy.svg",
+    "extIcon": "https://raw.githubusercontent.com/gokturk413/iobroker.redundancy/main/admin/redundancy.svg",
     "readme": "https://github.com/gokturk413/iobroker.redundancy/blob/main/README.md",
     "enabled": true,
     "mode": "daemon",
