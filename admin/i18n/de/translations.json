@@ -1,0 +1,6 @@
+{
+  "Watchdog status file": "Watchdog-Statusdatei",
+  "statusFile of the watchdog config of this host, e.g. /var/lib/scada/watchdog-status.json": "statusFile der Watchdog-Konfiguration dieses Hosts, z. B. /var/lib/scada/watchdog-status.json",
+  "iobroker.json to check": "Zu prüfende iobroker.json",
+  "Empty: the iobroker.json of this host": "Leer: die iobroker.json dieses Hosts"
+}

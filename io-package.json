@@ -1,0 +1,182 @@
+{
+  "common": {
+    "name": "redundancy",
+    "version": "0.0.1",
+    "news": {
+      "0.0.1": {
+        "en": "First build: the native engine for Linux, Windows and macOS (x64, arm64); the adapter checks the Redis client options of this host and shows the watchdog's role.",
+        "de": "Erste Version: die native Engine für Linux, Windows und macOS (x64, arm64); der Adapter prüft die Redis-Client-Optionen dieses Hosts und zeigt die Rolle des Watchdogs.",
+        "ru": "Первая сборка: нативный движок для Linux, Windows и macOS (x64, arm64); адаптер проверяет параметры Redis-клиента этого хоста и показывает роль watchdog."
+      }
+    },
+    "titleLang": {
+      "en": "SCADA redundancy",
+      "de": "SCADA-Redundanz",
+      "ru": "Резервирование SCADA"
+    },
+    "desc": {
+      "en": "Redundant ioBroker servers: Redis Sentinel failover, heartbeat links, lease and self-fencing",
+      "de": "Redundante ioBroker-Server: Redis-Sentinel-Failover, Heartbeat-Verbindungen, Lease und Self-Fencing",
+      "ru": "Резервные серверы ioBroker: переключение Redis Sentinel, каналы heartbeat, аренда и самоизоляция"
+    },
+    "authors": [
+      "Kamran Mustafayev"
+    ],
+    "keywords": [
+      "redundancy",
+      "failover",
+      "high availability",
+      "redis",
+      "sentinel",
+      "scada"
+    ],
+    "licenseInformation": {
+      "type": "commercial",
+      "license": "MIT",
+      "link": "https://github.com/gokturk413/iobroker.redundancy/blob/main/LICENSE"
+    },
+    "platform": "Javascript/Node.js",
+    "icon": "redundancy.png",
+    "extIcon": "https://raw.githubusercontent.com/gokturk413/iobroker.redundancy/main/admin/redundancy.png",
+    "readme": "https://github.com/gokturk413/iobroker.redundancy/blob/main/README.md",
+    "enabled": true,
+    "mode": "daemon",
+    "type": "general",
+    "compact": true,
+    "connectionType": "local",
+    "dataSource": "poll",
+    "tier": 1,
+    "adminUI": {
+      "config": "json"
+    },
+    "dependencies": [
+      {
+        "js-controller": ">=6.0.11"
+      }
+    ],
+    "globalDependencies": [
+      {
+        "admin": ">=7.0.0"
+      }
+    ]
+  },
+  "native": {
+    "statusFile": "",
+    "iobrokerJson": ""
+  },
+  "objects": [],
+  "instanceObjects": [
+    {
+      "_id": "info",
+      "type": "channel",
+      "common": {
+        "name": "Information"
+      },
+      "native": {}
+    },
+    {
+      "_id": "info.connection",
+      "type": "state",
+      "common": {
+        "role": "indicator.connected",
+        "name": "The watchdog of this host is running",
+        "type": "boolean",
+        "read": true,
+        "write": false,
+        "def": false
+      },
+      "native": {}
+    },
+    {
+      "_id": "role",
+      "type": "state",
+      "common": {
+        "role": "text",
+        "name": "Role of this host: primary, standby, fenced or offline",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": "offline"
+      },
+      "native": {}
+    },
+    {
+      "_id": "primary",
+      "type": "state",
+      "common": {
+        "role": "text",
+        "name": "Redis master the cluster runs on",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
+    },
+    {
+      "_id": "epoch",
+      "type": "state",
+      "common": {
+        "role": "value",
+        "name": "Lease epoch (rises on every takeover)",
+        "type": "number",
+        "read": true,
+        "write": false,
+        "def": 0
+      },
+      "native": {}
+    },
+    {
+      "_id": "peer",
+      "type": "state",
+      "common": {
+        "role": "text",
+        "name": "The other server as the heartbeat links see it",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
+    },
+    {
+      "_id": "clientOptions",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Redis client options of this host that a switch needs (empty list = right)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": "[]"
+      },
+      "native": {}
+    },
+    {
+      "_id": "engineVersion",
+      "type": "state",
+      "common": {
+        "role": "text",
+        "name": "Version of the native engine",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
+    },
+    {
+      "_id": "watchdogInstall",
+      "type": "state",
+      "common": {
+        "role": "text",
+        "name": "Command that installs the watchdog service on this host (once, as admin)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
+    }
+  ]
+}

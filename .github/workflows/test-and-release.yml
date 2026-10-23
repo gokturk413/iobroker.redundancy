@@ -1,0 +1,109 @@
+name: Test and Release
+# Tests run on every push. A tag vX.Y.Z, the engine-released dispatch of the private engine
+# repository, or a manual run pulls the engine release, checks the package and publishes
+# iobroker.redundancy to npm (the version comes from package.json).
+on:
+  push:
+    branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+', 'v[0-9]+.[0-9]+.[0-9]+-**']
+  pull_request: {}
+  repository_dispatch:
+    types: [engine-released]
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: 'Engine release tag (empty: the latest)'
+        required: false
+        default: ''
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  adapter-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+        node-version: ['22.x', '24.x']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm install
+      - run: npm test
+
+  deploy:
+    needs: adapter-tests
+    if: |
+      (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch') &&
+      vars.ENABLE_DEPLOY != 'false'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Pull the engine release (one .gz per binary and platform)
+        env:
+          GH_TOKEN: ${{ secrets.ENGINE_ASSETS_TOKEN }}
+          ENGINE_REPO: ${{ vars.ENGINE_REPO || 'gokturk413/my_redundancy_engine' }}
+          ENGINE_TAG: ${{ github.event.client_payload.version || inputs.engine || '' }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::the ENGINE_ASSETS_TOKEN secret is missing"; exit 1; }
+          for rid in win-x64 linux-x64 linux-arm64 osx-arm64 osx-x64; do
+            exe=""; [ "${rid#win-}" != "$rid" ] && exe=.exe
+            dir="prebuilds/$rid"; rm -rf "$dir"; mkdir -p "$dir"
+            gh release download $ENGINE_TAG --repo "$ENGINE_REPO" --dir "$dir" --clobber \
+              --pattern "redundancy-$rid.node.gz" --pattern "redundancy-watchdog-$rid$exe.gz"
+            mv "$dir/redundancy-$rid.node.gz" "$dir/redundancy.node.gz"
+            mv "$dir/redundancy-watchdog-$rid$exe.gz" "$dir/redundancy-watchdog$exe.gz"
+            gzip -t "$dir"/*.gz
+          done
+          ls -laR prebuilds
+
+      - name: The package holds only the compressed engine files
+        run: |
+          extra="$(find prebuilds -type f ! -name 'redundancy.node.gz' ! -name 'redundancy-watchdog.gz' ! -name 'redundancy-watchdog.exe.gz')"
+          [ -z "$extra" ] || { echo "not allowed in the package:"; echo "$extra"; exit 1; }
+          [ "$(find prebuilds -name '*.gz' | wc -l)" = 10 ] || { echo "expected 10 files (5 platforms x 2)"; exit 1; }
+          npm pack --dry-run --json | node -e "
+            const files = JSON.parse(require('fs').readFileSync(0, 'utf8'))[0].files.map(f => f.path);
+            const bad = files.filter(f => f.startsWith('prebuilds/') && !f.endsWith('.gz'));
+            if (bad.length) { console.error('uncompressed:', bad); process.exit(1); }
+            console.log(files.length, 'files in the package');"
+
+      - run: npm install
+
+      - name: The engine works here (Linux x64) and in Debian 12
+        run: |
+          node -e "const b=require('./lib/nativeBridge'); console.log('addon', b.loadAddon().version()); require('child_process').execFileSync(b.watchdogPath(), ['--help'], {stdio:'inherit'})"
+          sudo find prebuilds -type f ! -name "*.gz" -delete
+          docker run --rm -v "$PWD:/a" -w /a node:22-bookworm node -e "const b=require('./lib/nativeBridge'); console.log('addon', b.loadAddon().version(), 'in node:22-bookworm')"
+          sudo find prebuilds -type f ! -name "*.gz" -delete
+
+      - run: npm test
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          name=$(node -p "require('./package.json').name"); ver=$(node -p "require('./package.json').version")
+          if npm view "$name@$ver" version >/dev/null 2>&1; then
+            echo "$name@$ver is already on npm, nothing to publish"
+          else
+            npm publish --access public
+          fi
+
+      - name: GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes || echo "release exists"

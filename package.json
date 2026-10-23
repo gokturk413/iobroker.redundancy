@@ -1,0 +1,41 @@
+{
+  "name": "iobroker.redundancy",
+  "version": "0.0.1",
+  "description": "Redundant SCADA servers for ioBroker: Redis Sentinel failover, heartbeat links, lease and self-fencing, driven by a native watchdog",
+  "author": {
+    "name": "Kamran Mustafayev"
+  },
+  "homepage": "https://github.com/gokturk413/iobroker.redundancy",
+  "license": "MIT",
+  "keywords": [
+    "ioBroker",
+    "redundancy",
+    "failover",
+    "high availability",
+    "redis sentinel",
+    "scada"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gokturk413/iobroker.redundancy.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@iobroker/adapter-core": "^3.2.3"
+  },
+  "main": "main.js",
+  "files": [
+    "admin/",
+    "lib/",
+    "prebuilds/**/*.gz",
+    "main.js",
+    "io-package.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  }
+}

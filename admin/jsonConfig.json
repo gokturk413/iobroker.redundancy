@@ -1,0 +1,27 @@
+{
+  "i18n": true,
+  "type": "panel",
+  "items": {
+    "statusFile": {
+      "type": "text",
+      "label": "Watchdog status file",
+      "help": "statusFile of the watchdog config of this host, e.g. /var/lib/scada/watchdog-status.json",
+      "sm": 12,
+      "md": 8
+    },
+    "iobrokerJson": {
+      "type": "text",
+      "label": "iobroker.json to check",
+      "help": "Empty: the iobroker.json of this host",
+      "sm": 12,
+      "md": 8,
+      "newLine": true
+    },
+    "installHelp": {
+      "type": "staticText",
+      "text": "The watchdog runs as a service of the operating system (systemd, launchd or Windows service), so it keeps working when ioBroker stops. Install it once with the command in the state redundancy.0.watchdogInstall.",
+      "newLine": true,
+      "sm": 12
+    }
+  }
+}
