@@ -21,6 +21,13 @@ Supported platforms: Linux x64 and arm64 (glibc 2.35 or newer, e.g. Debian 12, U
 Windows x64, macOS arm64 and x64. Only the files of your platform are expanded on first
 use.
 
+## Documentation
+
+| | English | Azərbaycanca |
+|---|---|---|
+| The redundancy system: setup, tests, operation | [docs/en/redundancy.md](docs/en/redundancy.md) | [docs/az/redundancy.md](docs/az/redundancy.md) |
+| The adapter: settings, states, problems | [docs/en/adapter.md](docs/en/adapter.md) | [docs/az/adapter.md](docs/az/adapter.md) |
+
 ## Setup (short)
 
 1. Run Redis with Sentinel on both servers and a witness Sentinel on a third machine.
