@@ -177,6 +177,19 @@
         "def": ""
       },
       "native": {}
+    },
+    {
+      "_id": "lastMoves",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Last cold instance moves to this host (JSON)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
     }
   ]
 }

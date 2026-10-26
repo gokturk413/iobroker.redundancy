@@ -9,14 +9,21 @@ const utils = require('@iobroker/adapter-core');
 
 const bridge = require('./lib/nativeBridge');
 const { statusToStates, installCommand } = require('./lib/status');
+const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 
 const POLL_MS = 1000;
+/** A primary checks this often that every cold instance is here (and at once on a switch). */
+const RECONCILE_MS = 5000;
 
 class Redundancy extends utils.Adapter {
     constructor(options = {}) {
         super({ ...options, name: 'redundancy' });
         this.timer = null;
         this.last = {};
+        this.addon = null;
+        this.moving = false;
+        this.lastReconcile = 0;
+        this.lastSwitch = '';
         this.on('ready', () => this.onReady());
         this.on('unload', cb => this.onUnload(cb));
     }
@@ -26,6 +33,7 @@ class Redundancy extends utils.Adapter {
         let addon;
         try {
             addon = bridge.loadAddon();
+            this.addon = addon;
             await this.setStateAsync('engineVersion', addon.version(), true);
         } catch (e) {
             this.log.error(`native engine: ${e.message}`);
@@ -83,6 +91,59 @@ class Redundancy extends utils.Adapter {
                 await this.setStateAsync(id, val, true);
             }
         }
+        this.maybeReconcile(states);
+    }
+
+    /** On the primary: at once after a role or epoch change, else every RECONCILE_MS. */
+    maybeReconcile(states) {
+        const sw = `${states.role}:${states.epoch}`;
+        const due = sw !== this.lastSwitch || Date.now() - this.lastReconcile >= RECONCILE_MS;
+        if (this.moving || !this.addon || states.role !== 'primary' || !due) {
+            return;
+        }
+        this.lastSwitch = sw;
+        this.lastReconcile = Date.now();
+        this.moving = true;
+        reconcile({ status: { role: states.role, peer: states.peer }, me: this.host, addon: this.addon, io: this.io() })
+            .then(results => this.reportMoves(results))
+            .catch(e => this.log.error(`moving cold instances: ${e.message}`))
+            .finally(() => {
+                this.moving = false;
+            });
+    }
+
+    async reportMoves(results) {
+        if (!results.length) {
+            return;
+        }
+        for (const r of results) {
+            const how = r.waitedMs ? ` after ${r.waitedMs} ms for the old copy${r.timedOut ? ' (it did not stop)' : ''}` : '';
+            if (r.ok) {
+                this.log.info(`moved ${r.id} from ${r.from} to ${this.host}${how}`);
+            } else {
+                this.log.error(`could not move ${r.id} from ${r.from}: ${r.error}`);
+            }
+        }
+        await this.setStateAsync('lastMoves', JSON.stringify({ t: Date.now(), to: this.host, moves: results }), true);
+    }
+
+    /** Object and state access for lib/moves.js. */
+    io() {
+        const sys = id => `system.adapter.${id}`;
+        const all = async () =>
+            Object.values(
+                (await this.getForeignObjectsAsync('system.adapter.*', 'instance')) || {},
+            );
+        return {
+            getInstances: async () => (await all()).map(instanceFromObject).filter(Boolean),
+            getPair: async () => pairHosts(await all()),
+            extend: (id, common) => this.extendForeignObjectAsync(sys(id), { common }),
+            isAlive: async id => (await this.getForeignStateAsync(`${sys(id)}.alive`))?.val === true,
+            clearSigKill: id => this.delForeignStateAsync(`${sys(id)}.sigKill`).catch(() => {}),
+            setNotAlive: id => this.setForeignStateAsync(`${sys(id)}.alive`, false, true),
+            sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+            now: () => Date.now(),
+        };
     }
 
     onUnload(callback) {
