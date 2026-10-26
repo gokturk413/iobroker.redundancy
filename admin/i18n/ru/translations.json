@@ -4,5 +4,7 @@
   "iobroker.json to check": "Проверяемый iobroker.json",
   "Empty: the iobroker.json of this host": "Пусто: iobroker.json этого хоста",
   "Watchdog API": "API сторожевого сервиса",
-  "Empty: watchdog.sock next to the status file, or the pipe scada-redundancy-watchdog on Windows": "Пусто: watchdog.sock рядом с файлом состояния, в Windows канал scada-redundancy-watchdog"
+  "Empty: watchdog.sock next to the status file, or the pipe scada-redundancy-watchdog on Windows": "Пусто: watchdog.sock рядом с файлом состояния, в Windows канал scada-redundancy-watchdog",
+  "Watchdog API token": "Токен API сторожевого сервиса",
+  "apiToken of the watchdog config of this host: needed for switchover and maintenance": "apiToken из конфигурации сторожевого сервиса этого хоста: нужен для переключения и обслуживания"
 }

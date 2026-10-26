@@ -10,7 +10,10 @@ const utils = require('@iobroker/adapter-core');
 const bridge = require('./lib/nativeBridge');
 const { statusToStates, installCommand, STALE_MS } = require('./lib/status');
 const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
-const { WatchdogClient, defaultApiPath } = require('./lib/api');
+const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
+
+/** Events kept in the `events` state. */
+const MAX_EVENTS = 100;
 
 /** Events that go to the log as warnings; the rest is info, lease errors are debug. */
 const WARN_EVENTS = new Set(['alarm', 'fence', 'failover-failed', 'api-error']);
@@ -31,7 +34,10 @@ class Redundancy extends utils.Adapter {
         this.api = null;
         this.apiUp = false;
         this.apiStatus = null;
+        this.apiWhere = null;
+        this.events = [];
         this.on('ready', () => this.onReady());
+        this.on('stateChange', (id, state) => this.onStateChange(id, state));
         this.on('unload', cb => this.onUnload(cb));
     }
 
@@ -64,7 +70,14 @@ class Redundancy extends utils.Adapter {
         }
         const where = this.config.apiSocket || defaultApiPath(this.config.statusFile, process.platform);
         if (where) {
+            this.apiWhere = where;
+            try {
+                this.events = JSON.parse((await this.getStateAsync('events'))?.val || '[]');
+            } catch {
+                this.events = [];
+            }
             this.startApi(where);
+            this.subscribeStates('control.*');
         }
         this.timer = setInterval(() => this.poll(), POLL_MS);
         this.poll();
@@ -105,6 +118,53 @@ class Redundancy extends utils.Adapter {
         if (event === 'role') {
             this.poll(); // the new role now, not up to a second later
         }
+        if (event !== 'lease-error') {
+            this.events = pushEvent(this.events, e, MAX_EVENTS);
+            this.setState('events', JSON.stringify(this.events), true);
+        }
+        if (event === 'switchover') {
+            this.setState('lastSwitch', JSON.stringify({ t, ...rest }), true);
+        }
+    }
+
+    /** The operator's commands: a planned switchover, the maintenance lock. */
+    async onStateChange(id, state) {
+        if (!state || state.ack || !id.startsWith(`${this.namespace}.control.`)) {
+            return;
+        }
+        const what = id.slice(this.namespace.length + 'control.'.length + 1);
+        const by = state.user ? String(state.user).replace(/^system\.user\./, '') : String(state.from || '');
+        let req;
+        if (what === 'switchover') {
+            const to = String(state.val ?? '').trim();
+            if (!to) {
+                return;
+            }
+            req = { op: 'switchover', to, by, reason: `${what} from ${state.from || 'unknown'}` };
+        } else if (what === 'maintenance') {
+            const minutes = Math.max(0, Math.round(Number(state.val) || 0));
+            req = { op: 'maintenance', minutes, by, reason: `${what} from ${state.from || 'unknown'}` };
+        } else {
+            return;
+        }
+        if (!this.config.apiToken) {
+            this.log.error(`${what} refused: set the watchdog API token in the settings (apiToken of the watchdog config)`);
+            await this.setStateAsync(id, what === 'switchover' ? '' : 0, true);
+            return;
+        }
+        this.log.info(`${what} requested by ${by}: ${JSON.stringify(req)}`);
+        try {
+            const reply = await request(this.apiWhere, { ...req, token: this.config.apiToken });
+            if (reply.type === 'error') {
+                this.log.error(`${what} refused by the watchdog: ${reply.error}`);
+            } else if (reply.type === 'maintenance') {
+                await this.setStateAsync('maintenanceUntil', Number(reply.until) || 0, true);
+            }
+        } catch (e) {
+            this.log.error(`${what}: ${e.message}`);
+        }
+        // the command is done (or refused): the command state shows its value acknowledged
+        await this.setStateAsync(id, what === 'switchover' ? '' : req.minutes, true);
     }
 
     async checkClientOptions(addon) {

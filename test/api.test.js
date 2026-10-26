@@ -5,7 +5,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
-const { WatchdogClient, defaultApiPath } = require('../lib/api');
+const { WatchdogClient, defaultApiPath, request, pushEvent } = require('../lib/api');
 
 let n = 0;
 function endpoint() {
@@ -104,4 +104,36 @@ test('the API sits next to the status file, or is the named pipe on Windows', ()
     assert.strictEqual(defaultApiPath('/var/lib/scada/watchdog-status.json', 'darwin'), '/var/lib/scada/watchdog.sock');
     assert.strictEqual(defaultApiPath('', 'linux'), null);
     assert.strictEqual(defaultApiPath('C:\\ProgramData\\SCADA\\s.json', 'win32'), '\\\\.\\pipe\\scada-redundancy-watchdog');
+});
+
+test('a request gets the one answer line back', async () => {
+    const where = endpoint();
+    const { server, got } = await fakeWatchdog(where, (s, l) => {
+        const r = JSON.parse(l);
+        s.write(`${JSON.stringify({ type: r.op, to: r.to, by: r.by })}\n`);
+    });
+    const reply = await request(where, { op: 'switchover', to: 'B', by: 'admin', token: 't' });
+    assert.deepStrictEqual(reply, { type: 'switchover', to: 'B', by: 'admin' });
+    assert.deepStrictEqual(JSON.parse(got[0]).token, 't');
+    server.close();
+});
+
+test('a request with no watchdog, or no answer in time, fails with a reason', async () => {
+    await assert.rejects(request(endpoint(), { op: 'status' }, 500), /watchdog API/);
+    const where = endpoint();
+    const { server } = await fakeWatchdog(where, () => {});
+    await assert.rejects(request(where, { op: 'switchover', to: 'B' }, 200), /no answer/);
+    server.close();
+});
+
+test('the event list keeps the newest ones first and at most max', () => {
+    let list = [];
+    for (let i = 1; i <= 5; i++) {
+        list = pushEvent(list, { event: 'role', t: i }, 3);
+    }
+    assert.deepStrictEqual(
+        list.map(e => e.t),
+        [5, 4, 3],
+    );
+    assert.strictEqual(pushEvent([], { type: 'event', event: 'x', t: 1 }, 3)[0].type, undefined, 'the line type is dropped');
 });

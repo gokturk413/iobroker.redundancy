@@ -17,6 +17,15 @@
       "md": 8,
       "newLine": true
     },
+    "apiToken": {
+      "type": "password",
+      "label": "Watchdog API token",
+      "help": "apiToken of the watchdog config of this host: needed for switchover and maintenance",
+      "sm": 12,
+      "md": 8,
+      "newLine": true,
+      "visible": true
+    },
     "iobrokerJson": {
       "type": "text",
       "label": "iobroker.json to check",

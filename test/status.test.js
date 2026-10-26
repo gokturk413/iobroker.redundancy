@@ -22,7 +22,9 @@ test('a fresh status file gives the role, master, epoch and peer', () => {
         primary: '192.168.64.11:6379',
         epoch: 11,
         peer: 'Ok',
+        maintenanceUntil: 0,
     });
+    assert.strictEqual(statusToStates({ ...fresh, maintenanceUntil: 1793034074471 }, fresh.t).maintenanceUntil, 1793034074471);
 });
 
 test('a stale or missing status means the watchdog is not running', () => {

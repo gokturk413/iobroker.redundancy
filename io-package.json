@@ -63,6 +63,7 @@
   "native": {
     "statusFile": "",
     "apiSocket": "",
+    "apiToken": "",
     "iobrokerJson": ""
   },
   "objects": [],
@@ -191,6 +192,88 @@
         "def": ""
       },
       "native": {}
+    },
+    {
+      "_id": "control",
+      "type": "channel",
+      "common": {
+        "name": "Operator commands (need apiToken)"
+      },
+      "native": {}
+    },
+    {
+      "_id": "control.switchover",
+      "type": "state",
+      "common": {
+        "read": true,
+        "write": true,
+        "name": "Planned switchover: write the target host name of the watchdog config (e.g. B)",
+        "type": "string",
+        "role": "text",
+        "def": ""
+      },
+      "native": {}
+    },
+    {
+      "_id": "control.maintenance",
+      "type": "state",
+      "common": {
+        "read": true,
+        "write": true,
+        "name": "Maintenance lock: write minutes (0 lifts it); blocks automatic switches on every server",
+        "type": "number",
+        "role": "level",
+        "unit": "min",
+        "min": 0,
+        "max": 1440,
+        "def": 0
+      },
+      "native": {}
+    },
+    {
+      "_id": "maintenanceUntil",
+      "type": "state",
+      "common": {
+        "read": true,
+        "write": false,
+        "name": "Maintenance lock ends (0 = no lock)",
+        "type": "number",
+        "role": "date",
+        "def": 0
+      },
+      "native": {}
+    },
+    {
+      "_id": "lastSwitch",
+      "type": "state",
+      "common": {
+        "read": true,
+        "write": false,
+        "name": "Last switchover through this host (JSON)",
+        "type": "string",
+        "role": "json",
+        "def": ""
+      },
+      "native": {}
+    },
+    {
+      "_id": "events",
+      "type": "state",
+      "common": {
+        "read": true,
+        "write": false,
+        "name": "Watchdog events of this host, newest first (JSON, last 100)",
+        "type": "string",
+        "role": "json",
+        "def": "[]"
+      },
+      "native": {}
     }
+  ],
+  "encryptedNative": [
+    "apiToken"
+  ],
+  "protectedNative": [
+    "apiToken"
   ]
 }
