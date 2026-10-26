@@ -2,5 +2,7 @@
   "Watchdog status file": "Watchdog status file",
   "statusFile of the watchdog config of this host, e.g. /var/lib/scada/watchdog-status.json": "statusFile of the watchdog config of this host, e.g. /var/lib/scada/watchdog-status.json",
   "iobroker.json to check": "iobroker.json to check",
-  "Empty: the iobroker.json of this host": "Empty: the iobroker.json of this host"
+  "Empty: the iobroker.json of this host": "Empty: the iobroker.json of this host",
+  "Watchdog API": "Watchdog API",
+  "Empty: watchdog.sock next to the status file, or the pipe scada-redundancy-watchdog on Windows": "Empty: watchdog.sock next to the status file, or the pipe scada-redundancy-watchdog on Windows"
 }

@@ -8,8 +8,12 @@ const path = require('node:path');
 const utils = require('@iobroker/adapter-core');
 
 const bridge = require('./lib/nativeBridge');
-const { statusToStates, installCommand } = require('./lib/status');
+const { statusToStates, installCommand, STALE_MS } = require('./lib/status');
 const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
+const { WatchdogClient, defaultApiPath } = require('./lib/api');
+
+/** Events that go to the log as warnings; the rest is info, lease errors are debug. */
+const WARN_EVENTS = new Set(['alarm', 'fence', 'failover-failed', 'api-error']);
 
 const POLL_MS = 1000;
 /** A primary checks this often that every cold instance is here (and at once on a switch). */
@@ -24,6 +28,9 @@ class Redundancy extends utils.Adapter {
         this.moving = false;
         this.lastReconcile = 0;
         this.lastSwitch = '';
+        this.api = null;
+        this.apiUp = false;
+        this.apiStatus = null;
         this.on('ready', () => this.onReady());
         this.on('unload', cb => this.onUnload(cb));
     }
@@ -55,8 +62,49 @@ class Redundancy extends utils.Adapter {
             this.log.warn('no watchdog status file set: the role of this host is unknown (settings → status file)');
             return;
         }
+        const where = this.config.apiSocket || defaultApiPath(this.config.statusFile, process.platform);
+        if (where) {
+            this.startApi(where);
+        }
         this.timer = setInterval(() => this.poll(), POLL_MS);
         this.poll();
+    }
+
+    /** The watchdog's local API: its events at once, its status every 500 ms. */
+    startApi(where) {
+        this.api = new WatchdogClient(where);
+        this.api.on('status', s => {
+            this.apiStatus = s;
+        });
+        this.api.on('event', e => this.onWatchdogEvent(e));
+        this.api.on('up', () => {
+            this.apiUp = true;
+            this.log.info(`watchdog API connected: ${where}`);
+        });
+        this.api.on('down', () => {
+            this.apiStatus = null;
+            if (this.apiUp) {
+                this.apiUp = false;
+                this.log.warn(`watchdog API lost: ${where} (the status file is read meanwhile)`);
+            }
+        });
+        this.api.start();
+    }
+
+    onWatchdogEvent(e) {
+        // eslint-disable-next-line no-unused-vars
+        const { type, t, event, ...rest } = e;
+        const text = `watchdog: ${event} ${JSON.stringify(rest)}`;
+        if (WARN_EVENTS.has(event)) {
+            this.log.warn(text);
+        } else if (event === 'lease-error') {
+            this.log.debug(text);
+        } else {
+            this.log.info(text);
+        }
+        if (event === 'role') {
+            this.poll(); // the new role now, not up to a second later
+        }
     }
 
     async checkClientOptions(addon) {
@@ -78,13 +126,18 @@ class Redundancy extends utils.Adapter {
     }
 
     async poll() {
-        let status = null;
+        let file = null;
         try {
-            status = JSON.parse(fs.readFileSync(this.config.statusFile, 'utf8'));
+            file = JSON.parse(fs.readFileSync(this.config.statusFile, 'utf8'));
         } catch {
             // not written yet, or the watchdog is not running: statusToStates says offline
         }
-        const states = statusToStates(status, Date.now());
+        const now = Date.now();
+        const fresh = this.apiStatus && now - this.apiStatus.t <= STALE_MS;
+        const states = statusToStates(fresh ? this.apiStatus : file, now);
+        // moves act on the status file too: only the watchdog can write its folder, while
+        // a socket or pipe name could be taken by someone else
+        this.fileRole = statusToStates(file, now).role;
         for (const [id, val] of Object.entries(states)) {
             if (this.last[id] !== val) {
                 this.last[id] = val;
@@ -98,7 +151,8 @@ class Redundancy extends utils.Adapter {
     maybeReconcile(states) {
         const sw = `${states.role}:${states.epoch}`;
         const due = sw !== this.lastSwitch || Date.now() - this.lastReconcile >= RECONCILE_MS;
-        if (this.moving || !this.addon || states.role !== 'primary' || !due) {
+        const primary = states.role === 'primary' && this.fileRole === 'primary';
+        if (this.moving || !this.addon || !primary || !due) {
             return;
         }
         this.lastSwitch = sw;
@@ -151,6 +205,7 @@ class Redundancy extends utils.Adapter {
             if (this.timer) {
                 clearInterval(this.timer);
             }
+            this.api?.stop();
         } finally {
             callback();
         }

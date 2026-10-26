@@ -9,6 +9,14 @@
       "sm": 12,
       "md": 8
     },
+    "apiSocket": {
+      "type": "text",
+      "label": "Watchdog API",
+      "help": "Empty: watchdog.sock next to the status file, or the pipe scada-redundancy-watchdog on Windows",
+      "sm": 12,
+      "md": 8,
+      "newLine": true
+    },
     "iobrokerJson": {
       "type": "text",
       "label": "iobroker.json to check",
