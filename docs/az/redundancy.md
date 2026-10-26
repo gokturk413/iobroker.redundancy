@@ -89,6 +89,18 @@ repl-diskless-load swapdb        # qayıdan server surəti birbaşa yaddaşa yü
 repl-diskless-sync-delay 0       # master surəti göndərməzdən əvvəl 5 s gözləmir
 ```
 
+Elektrik kəsilməsi Redis-in append-only faylının sonunu hər iki serverdə eyni anda yarımçıq
+qoya bilər və onda Redis başlamır. Docker-də Redis-i bu paketin `tools/redis-start.sh` skripti
+ilə başladın: Redis başlamazdan əvvəl o, faylı yoxlayır, surətini çıxarır və 16 MB-a qədər
+(`AOF_MAX_CUT`) zədəli sonu kəsir; ən yeni 3 surət saxlanır (`AOF_KEEP_BACKUPS`):
+
+```yaml
+  redis:
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-start.sh"]
+    volumes:
+      - ./redis-start.sh:/usr/local/bin/redis-start.sh:ro
+```
+
 ### 4.2 A, B və şahiddə Sentinel
 
 Hər üçündə eyni `sentinel.conf` (yalnız `announce-ip` fərqlidir):
@@ -256,8 +268,10 @@ Hər testi bir dəfə, ioBroker işləyərkən və məlumat axarkən edin:
   yeniləyin.
 - **Elektrik kəsiləndən sonra Redis başlamır** və logda `Bad file format reading the append
   only file … incr.aof` yazılır: sərt dayanma faylın sonunu yarımçıq qoyub, bəzən hər iki
-  serverdə eyni anda. Əvvəl sonuncu master olan serveri bərpa edin, sonra o birini; o, məlumatı
-  birincidən köçürəcək. Docker-də, stack qovluğunda:
+  serverdə eyni anda. `redis-start.sh` ilə (4.1) bu özü bərpa olunur və logda
+  `aof-repair: cut … bytes` yazılır. Logda `NOT repaired` yazılıbsa (`AOF_MAX_CUT`-dan çox zədə),
+  ya da skript yoxdursa: əvvəl sonuncu master olan serveri bərpa edin, sonra o birini; o,
+  məlumatı birincidən köçürəcək. Docker-də, stack qovluğunda:
 
   ```
   docker stop scada-redis

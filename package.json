@@ -33,7 +33,8 @@
     "main.js",
     "io-package.json",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "tools/redis-start.sh"
   ],
   "scripts": {
     "test": "node --test"

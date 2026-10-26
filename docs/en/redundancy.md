@@ -91,6 +91,18 @@ repl-diskless-load swapdb        # a returning server loads the copy straight in
 repl-diskless-sync-delay 0       # the master does not wait 5 s before it sends the copy
 ```
 
+A power loss can leave the end of Redis's append-only file unwritten on both servers at once,
+and Redis then does not start. With Docker, start Redis through `tools/redis-start.sh` of this
+package: before Redis starts it checks the file, copies it, and cuts a broken end of up to
+16 MB (`AOF_MAX_CUT`), keeping the newest 3 copies (`AOF_KEEP_BACKUPS`):
+
+```yaml
+  redis:
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-start.sh"]
+    volumes:
+      - ./redis-start.sh:/usr/local/bin/redis-start.sh:ro
+```
+
 ### 4.2 Sentinel on A, B and the witness
 
 The same `sentinel.conf` on all three (only `announce-ip` differs):
@@ -257,8 +269,10 @@ Do each test once, with ioBroker running and data flowing:
 - **Updating a server:** update the standby first, then switch, then update the other one.
 - **After a power loss Redis does not start** and its log says `Bad file format reading the
   append only file … incr.aof`: a hard stop left the end of the file unwritten, possibly on
-  both servers at once. Repair the server that was the master last first, then the other one,
-  which then copies the data from it. With Docker, in the stack folder:
+  both servers at once. With `redis-start.sh` (4.1) this is repaired by itself and the log
+  says `aof-repair: cut … bytes`. When it says `NOT repaired` (more than `AOF_MAX_CUT` broken),
+  or without the script: repair the server that was the master last first, then the other
+  one, which then copies the data from it. With Docker, in the stack folder:
 
   ```
   docker stop scada-redis
