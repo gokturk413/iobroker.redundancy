@@ -42,6 +42,7 @@ class Redundancy extends utils.Adapter {
     }
 
     async onReady() {
+        await this.ensureObjects();
         await this.setStateAsync('info.connection', false, true);
         let addon;
         try {
@@ -81,6 +82,18 @@ class Redundancy extends utils.Adapter {
         }
         this.timer = setInterval(() => this.poll(), POLL_MS);
         this.poll();
+    }
+
+    /**
+     * The states of io-package.json that this instance does not have yet: js-controller adds
+     * them on an install or upgrade, not when the files are replaced by hand (lab, 2026-10-26:
+     * redundancy.1 had none of the new states).
+     */
+    async ensureObjects() {
+        for (const o of require('./io-package.json').instanceObjects) {
+            const { _id, ...obj } = o;
+            await this.setObjectNotExistsAsync(_id, obj);
+        }
     }
 
     /** The watchdog's local API: its events at once, its status every 500 ms. */
