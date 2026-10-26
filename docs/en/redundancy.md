@@ -255,6 +255,20 @@ Do each test once, with ioBroker running and data flowing:
   as standby by itself.
 - **`role = offline`:** the watchdog of that server is not running. Start the service.
 - **Updating a server:** update the standby first, then switch, then update the other one.
+- **After a power loss Redis does not start** and its log says `Bad file format reading the
+  append only file … incr.aof`: a hard stop left the end of the file unwritten, possibly on
+  both servers at once. Repair the server that was the master last first, then the other one,
+  which then copies the data from it. With Docker, in the stack folder:
+
+  ```
+  docker stop scada-redis
+  docker run --rm -v ./redis-data:/data --entrypoint sh <redis image> -c \
+    'cd /data && cp -a appendonlydir appendonlydir.bak && echo y | redis-check-aof --fix appendonlydir/<the file named in the log>'
+  docker start scada-redis
+  ```
+
+  Only the writes of the last moment before the power loss are lost; the backup stays in
+  `appendonlydir.bak`.
 
 ## 7. Not in this version yet
 

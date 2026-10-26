@@ -254,6 +254,20 @@ Hər testi bir dəfə, ioBroker işləyərkən və məlumat axarkən edin:
 - **`role = offline`:** həmin serverin watchdog-u işləmir. Xidməti başladın.
 - **Serverin yenilənməsi:** əvvəl ehtiyat serveri yeniləyin, sonra keçid edin, sonra o birini
   yeniləyin.
+- **Elektrik kəsiləndən sonra Redis başlamır** və logda `Bad file format reading the append
+  only file … incr.aof` yazılır: sərt dayanma faylın sonunu yarımçıq qoyub, bəzən hər iki
+  serverdə eyni anda. Əvvəl sonuncu master olan serveri bərpa edin, sonra o birini; o, məlumatı
+  birincidən köçürəcək. Docker-də, stack qovluğunda:
+
+  ```
+  docker stop scada-redis
+  docker run --rm -v ./redis-data:/data --entrypoint sh <redis image> -c \
+    'cd /data && cp -a appendonlydir appendonlydir.bak && echo y | redis-check-aof --fix appendonlydir/<logda adı çəkilən fayl>'
+  docker start scada-redis
+  ```
+
+  Yalnız elektrik kəsilməzdən əvvəlki son anın yazıları itir; ehtiyat nüsxə
+  `appendonlydir.bak`-da qalır.
 
 ## 7. Bu versiyada hələ yoxdur
 
