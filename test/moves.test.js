@@ -54,6 +54,7 @@ test('a running old host: disable with movingTo, wait for the old copy, then mov
     const io = fakeIo({ aliveFor: 3 });
     const r = await runMoves([{ id: 'modbus.0', from: A, stopFirst: true, enableAfter: true }], B, io, {
         waitMs: 10_000,
+        minWaitMs: 0,
         pollMs: 250,
     });
     assert.deepStrictEqual(writes(io), [
@@ -64,6 +65,20 @@ test('a running old host: disable with movingTo, wait for the old copy, then mov
     ]);
     assert.strictEqual(r[0].waitedMs, 750);
     assert.strictEqual(r[0].timedOut, false);
+});
+
+test('the old host gets time to stop even when alive is already false', async () => {
+    // VM run 2026-10-26: alive was false (the copy was restarting), the move ran 1 ms after
+    // the disable, and the old host wrote its sigKill after our clear
+    const io = fakeIo({ aliveFor: 0 });
+    const r = await runMoves([{ id: 'modbus.0', from: A, stopFirst: true, enableAfter: true }], B, io, {
+        waitMs: 10_000,
+        minWaitMs: 3000,
+        pollMs: 250,
+    });
+    assert.strictEqual(r[0].waitedMs, 3000);
+    const clear = io.calls.findIndex(c => c[0] === 'clearSigKill');
+    assert.ok(io.calls.slice(0, clear).filter(c => c[0] === 'isAlive').length >= 1);
 });
 
 test('an old copy that does not stop in time is moved anyway, and says so', async () => {
