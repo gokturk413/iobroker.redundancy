@@ -13,6 +13,8 @@ const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
 const { installedAdapters } = require('./lib/installed');
 
+/** How often the watchdog config is read again (it changes only when someone edits it). */
+const CONFIG_MS = 60_000;
 /** How often this host's installed adapters are written to the installedAdapters state. */
 const INSTALLED_MS = 10 * 60_000;
 
@@ -42,6 +44,7 @@ class Redundancy extends utils.Adapter {
         this.events = [];
         this.skipsSaid = new Map();
         this.installedTimer = null;
+        this.configTimer = null;
         this.on('ready', () => this.onReady());
         this.on('stateChange', (id, state) => this.onStateChange(id, state));
         this.on('unload', cb => this.onUnload(cb));
@@ -122,6 +125,7 @@ class Redundancy extends utils.Adapter {
         this.api.on('event', e => this.onWatchdogEvent(e));
         this.api.on('up', () => {
             this.apiUp = true;
+            this.refreshConfig();
             this.log.info(`watchdog API connected: ${where}`);
         });
         this.api.on('down', () => {
@@ -132,6 +136,26 @@ class Redundancy extends utils.Adapter {
             }
         });
         this.api.start();
+        this.configTimer = setInterval(() => this.refreshConfig(), CONFIG_MS);
+    }
+
+    /** The watchdog config without its secrets, for the settings view of the admin tab. */
+    async refreshConfig() {
+        try {
+            const reply = await request(this.apiWhere, { op: 'config' }, 5000);
+            if (reply.type !== 'config') {
+                return;
+            }
+            // eslint-disable-next-line no-unused-vars
+            const { type, ...cfg } = reply;
+            const text = JSON.stringify(cfg);
+            if (text !== this.last.watchdogConfig) {
+                this.last.watchdogConfig = text;
+                await this.setStateAsync('watchdogConfig', text, true);
+            }
+        } catch (e) {
+            this.log.debug(`watchdog config: ${e.message}`);
+        }
     }
 
     onWatchdogEvent(e) {
@@ -306,6 +330,9 @@ class Redundancy extends utils.Adapter {
             }
             if (this.installedTimer) {
                 clearInterval(this.installedTimer);
+            }
+            if (this.configTimer) {
+                clearInterval(this.configTimer);
             }
             this.api?.stop();
         } finally {

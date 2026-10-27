@@ -24,6 +24,7 @@ test('a fresh status file gives the role, master, epoch and peer', () => {
         peer: 'Ok',
         maintenanceUntil: 0,
         watchdogHost: 'A',
+        links: '[]',
     });
     assert.strictEqual(statusToStates({ ...fresh, maintenanceUntil: 1793034074471 }, fresh.t).maintenanceUntil, 1793034074471);
 });
@@ -64,4 +65,12 @@ test('a switchover command is a host name, or JSON with the host and a reason', 
     assert.strictEqual(parseSwitchCommand('{"reason":"no target"}'), null);
     assert.strictEqual(parseSwitchCommand('{broken'), null, 'JSON that does not parse is not a host name either');
     assert.strictEqual(parseSwitchCommand('{"to":"B","reason":"' + 'x'.repeat(600) + '"}').reason.length, 500);
+});
+
+test('the links state changes only when a link is lost or back, not with every beat', () => {
+    const at = (age, lost) => statusToStates({ ...fresh, links: [{ name: 'lan', ageMs: age, lost }, { name: 'p2p', ageMs: 3, lost: false }] }, fresh.t);
+    assert.strictEqual(at(20, false).links, at(40, false).links, 'the age is not in it');
+    assert.notStrictEqual(at(20, false).links, at(400, true).links);
+    assert.deepStrictEqual(JSON.parse(at(400, true).links), [{ name: 'lan', lost: true }, { name: 'p2p', lost: false }]);
+    assert.strictEqual(statusToStates(fresh, fresh.t).links, '[]');
 });

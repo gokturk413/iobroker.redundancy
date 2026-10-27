@@ -115,10 +115,41 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     </section>
 
     <section id="view-settings" aria-label="Settings" hidden>
-        <div class="card">
-            <b>Settings of each host's instance</b>
-            <p class="dim" style="margin: 6px 0 12px">Status file, API and API token are set per host (each host has its own watchdog). Switch timing, links and the witness are in the watchdog config of each host.</p>
-            <ul id="settings"></ul>
+        <p class="dim" style="margin: 0 0 12px">What the watchdog of each server runs with (its <code>watchdog.json</code>). A value that differs between the servers is marked. To change one: edit <code>watchdog.json</code> on each server the same way, then restart its watchdog.</p>
+        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(420px, 1fr))">
+            <div class="card">
+                <b>Servers</b>
+                <div class="scroll" style="margin-top: 8px"><table><thead><tr><th>Priority</th><th>Name</th><th>ioBroker host</th><th>Address</th></tr></thead><tbody id="set-servers"></tbody></table></div>
+                <dl id="set-cluster" style="margin-top: 14px; grid-template-columns: 1fr"></dl>
+            </div>
+            <div class="card">
+                <b>Failover timing</b>
+                <dl id="set-timing" style="margin-top: 10px"></dl>
+                <p class="dim" style="margin: 12px 0 0">Built in: no automatic failback (an operator switches back), 60 s hold after a switch, at most 2 automatic switches per hour; the maintenance lock stops every automatic switch.</p>
+            </div>
+            <div class="card">
+                <b>Redis client options on every host</b>
+                <p class="dim" style="margin: 6px 0 8px">Checked in each host's iobroker.json (objects and states). Without them a switch costs seconds more, or js-controller stops.</p>
+                <div class="scroll"><table><thead id="set-co-head"></thead><tbody id="set-co"></tbody></table></div>
+            </div>
+            <div class="card" style="grid-column: 1 / -1">
+                <b>Heartbeat links</b>
+                <p class="dim" style="margin: 6px 0 8px">Any medium that carries UDP. The peer counts as lost only when every link is lost and the witness agrees; use at least two independent links.</p>
+                <div class="scroll"><table><thead id="set-links-head"></thead><tbody id="set-links"></tbody></table></div>
+            </div>
+            <div class="card">
+                <b>Client address (VIP)</b>
+                <p class="dim" style="margin: 6px 0 0">A virtual IP that follows the primary comes in a later version (H4). Until then clients reach the primary through Sentinel (ioBroker hosts) or by its own address.</p>
+            </div>
+            <div class="card">
+                <b>Licence</b>
+                <p class="dim" style="margin: 6px 0 0">Not in this version: the redundancy engine runs without a licence key for now.</p>
+            </div>
+            <div class="card">
+                <b>Instance settings of each server</b>
+                <p class="dim" style="margin: 6px 0 8px">Status file, API and API token of each server's redundancy instance.</p>
+                <ul id="settings" style="margin: 0"></ul>
+            </div>
         </div>
     </section>
 </main>
@@ -232,6 +263,42 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         $('events').innerHTML = events.map(e => eventRow(e, true)).join('') || '<tr><td class="dim">no events yet</td></tr>';
 
         $('settings').innerHTML = list.map(x => `<li><a target="_top" href="/#tab-instances/config/system.adapter.${esc(x.instance)}">${esc(x.instance)}</a> on ${esc(x.iobHost)} (${esc(x.name)})</li>`).join('');
+        drawSettings(list);
+    }
+
+    /** One value, or each server's value when they differ. */
+    function valueCell(r) {
+        const vals = Object.entries(r.values);
+        if (!vals.length) {
+            return '<span class="dim">not reported yet</span>';
+        }
+        const show = v => (v === true ? 'yes' : v === false ? 'no' : v === '' || v == null ? '—' : v);
+        if (r.same) {
+            return esc(show(vals[0][1]));
+        }
+        return `<span class="meh">${vals.map(([n, v]) => `${esc(n)}: ${esc(show(v))}`).join(' · ')} (differs)</span>`;
+    }
+
+    function drawSettings(list) {
+        const v = L.settingsView(list);
+        const names = list.map(x => x.name);
+        $('set-servers').innerHTML = v.servers.map(s => `<tr><td>${esc(s.priority)}</td><td>${esc(s.name)}</td>
+            <td style="font-family: var(--mono)">${esc(s.iobHost || '—')}</td><td style="font-family: var(--mono)">${esc(s.address)}</td></tr>`).join('')
+            || '<tr><td class="dim" colspan="4">no watchdog config reported yet</td></tr>';
+        $('set-cluster').innerHTML = v.cluster.map(r => `<div><dt>${esc(r.label)}</dt><dd>${valueCell(r)}</dd></div>`).join('');
+        $('set-timing').innerHTML = v.timing.map(r => `<div><dt>${esc(r.label)}</dt><dd>${valueCell(r)}</dd></div>`).join('');
+        $('set-co-head').innerHTML = `<tr><th>Option</th><th>Needed</th>${names.map(n => `<th>${esc(n)}</th>`).join('')}</tr>`;
+        $('set-co').innerHTML = v.clientOptions.map(r => `<tr><td style="font-family: var(--mono)">${esc(r.option)}</td><td style="font-family: var(--mono)">${esc(r.needed)}</td>
+            ${names.map(n => `<td class="${r.values[n] === 'ok' ? 'good' : 'badc'}" style="font-family: var(--mono)">${esc(r.values[n] || '—')}</td>`).join('')}</tr>`).join('');
+        $('set-links-head').innerHTML = `<tr><th>Link</th><th>Medium</th>${names.map(n => `<th>${esc(n)} side</th>`).join('')}<th>Lost after</th>${names.map(n => `<th>Now on ${esc(n)}</th>`).join('')}</tr>`;
+        $('set-links').innerHTML = v.links.map(l => `<tr><td>${esc(l.name)}</td><td>${esc(l.medium)}</td>
+            ${names.map(n => `<td style="font-family: var(--mono)">${esc(l.sides[n] || 'not configured')}</td>`).join('')}
+            <td>${esc(l.lostAfter)} beats</td>
+            ${names.map(n => `<td class="${l.now[n] === 'ok' ? 'good' : l.now[n] === 'lost' ? 'badc' : 'dim'}">${esc(l.now[n] || '—')}</td>`).join('')}</tr>`).join('')
+            || `<tr><td class="dim" colspan="${3 + names.length * 2}">no watchdog config reported yet</td></tr>`;
+        if (v.links.length === 1) {
+            $('set-links').innerHTML += `<tr><td colspan="${3 + names.length * 2}" class="meh">Only one link: a single cable or switch fault looks like a lost server. Add a second, independent link.</td></tr>`;
+        }
     }
 
     /** Only on load and after a save: a redraw on every state change would undo a choice not saved yet. */

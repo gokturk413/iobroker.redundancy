@@ -52,6 +52,9 @@
                     engine: String(val('engineVersion') || ''),
                     maintenanceUntil: Number(val('maintenanceUntil')) || 0,
                     installed: parseMap(val('installedAdapters')),
+                    config: parseMap(val('watchdogConfig')),
+                    links: parseList(val('links')),
+                    clientList: parseList(val('clientOptions')),
                 };
             })
             .sort((a, b) => a.name.localeCompare(b.name));
@@ -211,5 +214,93 @@
         return { missing, other };
     }
 
-    return { servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, readiness, adapterDiff, MODES };
+    /** The Redis client options every host needs (DESIGN-H1 §2b), with the value needed. */
+    const CLIENT_OPTIONS = [
+        ['host', 'the 3 Sentinels'],
+        ['sentinelName', 'the Sentinel master name'],
+        ['retry_max_delay', '150'],
+        ['retry_max_count', '100000'],
+        ['failoverDetector', 'false'],
+        ['connectTimeout', '1000'],
+        ['maxRetriesPerRequest', 'null'],
+        ['keepAlive', '1000'],
+    ];
+
+    /**
+     * The Settings view: what each host's watchdog config says, side by side; a value that
+     * differs between the hosts is marked (`same: false`).
+     */
+    function settingsView(list) {
+        const withCfg = list.filter(s => s.config && s.config.me);
+        const first = withCfg[0] ? withCfg[0].config : {};
+        const row = (key, label, get) => {
+            const values = {};
+            for (const s of withCfg) {
+                values[s.name] = get(s.config);
+            }
+            const all = Object.values(values).map(v => JSON.stringify(v));
+            return { key, label, values, same: all.every(v => v === all[0]) };
+        };
+        const servers = (first.hosts || [])
+            .slice()
+            .sort((a, b) => a.priority - b.priority)
+            .map(h => {
+                const s = list.find(x => x.name === h.name);
+                return { priority: h.priority, name: h.name, iobHost: s ? s.iobHost : '', address: String(h.redis || '').split(':')[0] };
+            });
+        const t = c => c.timing || {};
+        const cluster = [
+            row('cluster', 'Cluster', c => c.cluster),
+            row('sentinelName', 'Sentinel master name', c => c.sentinelName),
+            row('sentinels', 'Sentinels', c => (c.sentinels || []).join(', ')),
+            row('witness', 'Witness (Sentinel)', c => c.witness || ''),
+            row('witnessRequired', 'Witness required for an automatic failover', c => c.witnessRequired === true),
+        ];
+        const timing = [
+            row('fenceAfterMs', 'Fence after (ms)', c => t(c).fenceAfterMs),
+            row('takeoverAfterMs', 'Take over after (ms)', c => t(c).takeoverAfterMs),
+            row('leaseTtlMs', 'Lease TTL (ms)', c => t(c).leaseTtlMs),
+            row('beatMs', 'Heartbeat every (ms)', c => c.beatMs),
+            row('redisHangMs', 'A busy Redis counts as down after (ms)', c => c.redisHangMs),
+        ];
+        const names = [];
+        for (const s of withCfg) {
+            for (const l of s.config.links || []) {
+                if (!names.includes(l.name)) {
+                    names.push(l.name);
+                }
+            }
+        }
+        const links = names.map(name => {
+            const sides = {};
+            const now = {};
+            let medium = '';
+            let missed = null;
+            for (const s of withCfg) {
+                const l = (s.config.links || []).find(x => x.name === name);
+                if (l) {
+                    sides[s.name] = l.bind;
+                    medium = medium || l.medium;
+                    missed = missed == null ? l.missed : missed;
+                }
+            }
+            for (const s of list) {
+                const live = s.links.find(x => x.name === name);
+                now[s.name] = live ? (live.lost ? 'lost' : 'ok') : '—';
+            }
+            return { name, medium, sides, lostAfter: missed == null ? (medium === 'wlan' ? 10 : 3) : missed, now };
+        });
+        const clientOptions = CLIENT_OPTIONS.map(([option, needed]) => {
+            const values = {};
+            for (const s of list) {
+                const issues = s.clientList.filter(i => i.option === option);
+                values[s.name] = issues.length ? issues.map(i => `${i.found} in ${i.db}`).join(', ') : 'ok';
+            }
+            const said = list.flatMap(s => s.clientList).find(i => i.option === option && i.needed);
+            return { option, needed: said ? String(said.needed) : needed, values };
+        });
+        return { servers, cluster, timing, links, clientOptions };
+    }
+
+    return { servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, readiness, adapterDiff, settingsView, MODES };
 });

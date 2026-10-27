@@ -25,7 +25,7 @@ function pair(over = {}) {
         'redundancy.1.primary': st('192.168.64.11:6379'),
         'redundancy.1.epoch': st(53),
         'redundancy.1.peer': st('Ok'),
-        'redundancy.1.clientOptions': st('[{"db":"states","option":"keepAlive","severity":"error"}]'),
+        'redundancy.1.clientOptions': st('[{"db":"states","option":"keepAlive","found":"missing","needed":"1000","severity":"error"}]'),
         'redundancy.1.engineVersion': st('0.1.0'),
         'redundancy.1.maintenanceUntil': st(0),
         'redundancy.0.installedAdapters': st('{"modbus":"6.3.2","rockwell-enip":"0.2.1","mqtt":"7.0.0"}'),
@@ -135,4 +135,73 @@ test('a server card says how its adapters differ from the other server', () => {
     const [a, b] = pair();
     assert.deepStrictEqual(L.adapterDiff(b, [a, b]), { missing: ['mqtt'], other: ['rockwell-enip 0.2.0 (A: 0.2.1)'] });
     assert.deepStrictEqual(L.adapterDiff(a, [a, b]), { missing: [], other: ['rockwell-enip 0.2.1 (B: 0.2.0)'] });
+});
+
+const cfgOf = (me, bind, peer, over = {}) => JSON.stringify({
+    cluster: 'h0-vm',
+    me,
+    sentinelName: 'scada',
+    sentinels: ['192.168.64.11:26379', '192.168.64.12:26379', '192.168.64.1:26379'],
+    witness: '192.168.64.1:26379',
+    witnessRequired: true,
+    hosts: [
+        { name: 'A', priority: 1, redis: '192.168.64.11:6379' },
+        { name: 'B', priority: 2, redis: '192.168.64.12:6379' },
+    ],
+    links: [
+        { name: 'nat', medium: 'lan', bind, peer, missed: null },
+        { name: 'wifi', medium: 'wlan', bind: bind.replace('192.168.64', '172.20.0'), peer, missed: null },
+    ],
+    beatMs: 50,
+    timing: { fenceAfterMs: 150, takeoverAfterMs: 250, leaseTtlMs: 5000 },
+    redisHangMs: 3000,
+    apiTokenSet: true,
+    ...over,
+});
+
+function withConfigs(overB = {}) {
+    return pair({
+        'redundancy.0.watchdogConfig': st(cfgOf('A', '192.168.64.11:7001', '192.168.64.12:7001')),
+        'redundancy.1.watchdogConfig': st(cfgOf('B', '192.168.64.12:7001', '192.168.64.11:7001', overB)),
+        'redundancy.0.links': st('[{"name":"nat","lost":false},{"name":"wifi","lost":false}]'),
+        'redundancy.1.links': st('[{"name":"nat","lost":false},{"name":"wifi","lost":true}]'),
+    });
+}
+
+test('the settings view: servers of the config with their ioBroker host', () => {
+    const v = L.settingsView(withConfigs());
+    assert.deepStrictEqual(v.servers, [
+        { priority: 1, name: 'A', iobHost: 'iobStansiya486', address: '192.168.64.11' },
+        { priority: 2, name: 'B', iobHost: 'iobStansiya486_b', address: '192.168.64.12' },
+    ]);
+});
+
+test('a value that differs between the hosts is flagged; the same value is shown once', () => {
+    const same = L.settingsView(withConfigs());
+    const fence = same.timing.find(r => r.key === 'fenceAfterMs');
+    assert.deepStrictEqual(fence, { key: 'fenceAfterMs', label: 'Fence after (ms)', values: { A: 150, B: 150 }, same: true });
+    const v = L.settingsView(withConfigs({ timing: { fenceAfterMs: 150, takeoverAfterMs: 400, leaseTtlMs: 5000 } }));
+    const takeover = v.timing.find(r => r.key === 'takeoverAfterMs');
+    assert.strictEqual(takeover.same, false);
+    assert.deepStrictEqual(takeover.values, { A: 250, B: 400 });
+    assert.strictEqual(v.cluster.find(r => r.key === 'witness').same, true);
+});
+
+test('links are paired by name, with each side, the medium default and each host now', () => {
+    const v = L.settingsView(withConfigs());
+    assert.deepStrictEqual(v.links[1], {
+        name: 'wifi',
+        medium: 'wlan',
+        sides: { A: '172.20.0.11:7001', B: '172.20.0.12:7001' },
+        lostAfter: 10,
+        now: { A: 'ok', B: 'lost' },
+    });
+    assert.strictEqual(v.links[0].lostAfter, 3);
+});
+
+test('client options per host: ok, or what was found', () => {
+    const v = L.settingsView(withConfigs());
+    const keep = v.clientOptions.find(r => r.option === 'keepAlive');
+    assert.deepStrictEqual(keep.values, { A: 'ok', B: 'missing in states' });
+    assert.ok(v.clientOptions.find(r => r.option === 'retry_max_delay').values.B === 'ok');
 });

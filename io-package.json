@@ -303,6 +303,32 @@
         "def": "{}"
       },
       "native": {}
+    },
+    {
+      "_id": "links",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Heartbeat links of this host: name and whether lost (JSON)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": "[]"
+      },
+      "native": {}
+    },
+    {
+      "_id": "watchdogConfig",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Watchdog config of this host without its secrets (JSON)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": "{}"
+      },
+      "native": {}
     }
   ],
   "encryptedNative": [
