@@ -16,6 +16,7 @@ function fakeIo({ aliveFor = 0, instances = [], pair = [A, B], fail = [] } = {})
         calls,
         getInstances: async () => instances,
         getPair: async () => pair,
+        getInstalled: async () => ({ modbus: '6.3.2' }),
         extend: async (id, common) => {
             if (fail.includes(id)) {
                 throw new Error(`cannot write ${id}`);
@@ -123,32 +124,38 @@ test('reconcile moves only on the primary, with the watchdog telling whether the
     const addon = {
         planMoves: json => {
             seen.push(JSON.parse(json));
-            return JSON.stringify([{ id: 'modbus.0', from: A, stopFirst: false, enableAfter: false }]);
+            return JSON.stringify({
+                moves: [{ id: 'modbus.0', from: A, stopFirst: false, enableAfter: false }],
+                skipped: [{ id: 'rockwell-enip.0', reason: 'rockwell-enip is not installed' }],
+            });
         },
     };
     const standby = await reconcile({ status: { role: 'standby', peer: 'Ok' }, me: B, addon, io: fakeIo({ instances }) });
-    assert.deepStrictEqual(standby, [], 'a standby moves nothing');
+    assert.deepStrictEqual(standby, { moves: [], skipped: [] }, 'a standby moves nothing');
     const fenced = await reconcile({ status: { role: 'fenced', peer: 'Lost' }, me: B, addon, io: fakeIo({ instances }) });
-    assert.deepStrictEqual(fenced, []);
+    assert.deepStrictEqual(fenced, { moves: [], skipped: [] });
     assert.strictEqual(seen.length, 0, 'not even planned');
 
     const io = fakeIo({ instances });
     const r = await reconcile({ status: { role: 'primary', peer: 'Lost' }, me: B, addon, io });
-    assert.deepStrictEqual(seen[0], { me: B, pair: [A, B], oldHostGone: true, instances });
-    assert.strictEqual(r[0].ok, true);
+    assert.deepStrictEqual(seen[0], { me: B, pair: [A, B], oldHostGone: true, instances, installed: { modbus: '6.3.2' } });
+    assert.strictEqual(r.moves[0].ok, true);
+    assert.deepStrictEqual(r.skipped, [{ id: 'rockwell-enip.0', reason: 'rockwell-enip is not installed' }]);
     await reconcile({ status: { role: 'primary', peer: 'Ok' }, me: B, addon, io });
     assert.strictEqual(seen[1].oldHostGone, false);
 });
 
 test('an instance object becomes what planMoves reads; an unknown mode counts as none', () => {
     const obj = (common) => ({ _id: 'system.adapter.modbus.0', common: { host: A, enabled: true, ...common } });
-    assert.deepStrictEqual(instanceFromObject(obj({ redundancy: { mode: 'cold' } })), {
+    assert.deepStrictEqual(instanceFromObject(obj({ redundancy: { mode: 'cold' }, version: '6.3.2' })), {
         id: 'modbus.0',
         host: A,
         enabled: true,
         mode: 'cold',
         movingTo: null,
+        version: '6.3.2',
     });
+    assert.strictEqual(instanceFromObject(obj({})).version, null);
     // one bad value must not stop the plan for every instance
     assert.strictEqual(instanceFromObject(obj({ redundancy: { mode: 'warm' } })).mode, 'none');
     assert.strictEqual(instanceFromObject(obj({})).mode, 'none');

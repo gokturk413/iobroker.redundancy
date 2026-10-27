@@ -106,7 +106,7 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             <b>Which instances follow the primary</b>
             <p class="dim" style="margin: 6px 0 12px"><b style="display: inline">cold</b>: runs only on the primary; on a switch it moves there and starts (any adapter, a few seconds).
             <b style="display: inline">none</b>: stays on its host (admin, web, …). <b style="display: inline">hot</b> needs the adapter's own support and comes later. Saving a mode restarts that instance.</p>
-            <div class="scroll"><table><thead><tr><th>Instance</th><th>Runs on</th><th>Enabled</th><th>Mode</th><th></th></tr></thead><tbody id="instances"></tbody></table></div>
+            <div class="scroll"><table><thead><tr><th>Instance</th><th>Runs on</th><th>Enabled</th><th>Mode</th><th></th><th>Other server</th></tr></thead><tbody id="instances"></tbody></table></div>
         </div>
     </section>
 
@@ -239,7 +239,19 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         $('instances').innerHTML = L.instanceRows(objects).map(r => `<tr>
             <td style="font-family: var(--mono)">${esc(r.id)}</td><td>${esc(r.host)}</td><td>${r.enabled ? 'yes' : 'no'}</td>
             <td><select data-id="${esc(r.id)}" aria-label="mode of ${esc(r.id)}">${L.MODES.map(m => `<option value="${m}"${m === r.mode ? ' selected' : ''}${m === 'hot' ? ' disabled' : ''}>${m}${m === 'hot' ? ' (later)' : ''}</option>`).join('')}</select></td>
-            <td><button type="button" data-save="${esc(r.id)}" disabled>Save</button></td></tr>`).join('');
+            <td><button type="button" data-save="${esc(r.id)}" disabled>Save</button></td>
+            <td>${readyCell(r)}</td></tr>`).join('');
+    }
+
+    /** For a cold instance: can the other server start it? */
+    function readyCell(r) {
+        if (r.mode !== 'cold') {
+            return '<span class="dim">—</span>';
+        }
+        const issues = L.readiness(r, L.servers(instances, states));
+        return issues.length
+            ? issues.map(i => `<span class="${i.level === 'bad' ? 'badc' : 'meh'}">${esc(i.text)}</span>`).join('<br>')
+            : '<span class="good">ready</span>';
     }
 
     function parseEvents(instance) {
@@ -259,7 +271,25 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
                 <div><dt>Lease epoch</dt><dd>${x.role === 'primary' && x.epoch ? esc(x.epoch) : '—'}</dd></div>
                 <div><dt>Client options</dt><dd class="${x.clientIssues ? 'badc' : 'good'}">${x.clientIssues ? `${x.clientIssues} to fix` : 'all set'}</dd></div>
                 <div><dt>Engine</dt><dd>${esc(x.engine || '—')}</dd></div>
+                ${adaptersRow(x)}
             </dl></article>`;
+    }
+
+    /** What this server lacks or has in another version, against the other servers. */
+    function adaptersRow(x) {
+        const d = L.adapterDiff(x, L.servers(instances, states));
+        const n = Object.keys(x.installed).length;
+        if (!n) {
+            return '<div><dt>Adapters</dt><dd class="dim">not reported yet</dd></div>';
+        }
+        const parts = [];
+        if (d.missing.length) {
+            parts.push(`<span class="badc">missing: ${esc(d.missing.join(', '))}</span>`);
+        }
+        if (d.other.length) {
+            parts.push(`<span class="meh">other version: ${esc(d.other.join(', '))}</span>`);
+        }
+        return `<div style="grid-column: 1 / -1"><dt>Adapters (${n})</dt><dd>${parts.join('<br>') || '<span class="good">same as the other server</span>'}</dd></div>`;
     }
 
     function eventRow(e, full) {

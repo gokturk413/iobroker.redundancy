@@ -290,6 +290,19 @@
         "def": "[]"
       },
       "native": {}
+    },
+    {
+      "_id": "installedAdapters",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Adapters installed on this host: name → version (JSON)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": "{}"
+      },
+      "native": {}
     }
   ],
   "encryptedNative": [

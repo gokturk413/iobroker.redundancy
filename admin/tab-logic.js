@@ -12,6 +12,15 @@
     /** A standby counts as ready while its heartbeat links see the primary. */
     const PEER_OK = ['Ok', 'Degraded'];
 
+    function parseMap(text) {
+        try {
+            const v = JSON.parse(text || '{}');
+            return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+        } catch {
+            return {};
+        }
+    }
+
     function parseList(text) {
         try {
             const v = JSON.parse(text || '[]');
@@ -42,6 +51,7 @@
                     clientIssues: parseList(val('clientOptions')).length,
                     engine: String(val('engineVersion') || ''),
                     maintenanceUntil: Number(val('maintenanceUntil')) || 0,
+                    installed: parseMap(val('installedAdapters')),
                 };
             })
             .sort((a, b) => a.name.localeCompare(b.name));
@@ -151,10 +161,55 @@
             .map(o => {
                 const c = o.common || {};
                 const mode = c.redundancy && MODES.includes(c.redundancy.mode) ? c.redundancy.mode : 'none';
-                return { id: o._id.replace(/^system\.adapter\./, ''), host: String(c.host || ''), enabled: c.enabled === true, mode };
+                const id = o._id.replace(/^system\.adapter\./, '');
+                return {
+                    id,
+                    adapter: id.replace(/\.\d+$/, ''),
+                    host: String(c.host || ''),
+                    enabled: c.enabled === true,
+                    mode,
+                    version: typeof c.version === 'string' ? c.version : '',
+                };
             })
             .sort((a, b) => a.id.localeCompare(b.id));
     }
 
-    return { servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, MODES };
+    /**
+     * Where a cold instance could not start, or would start on another version: every other
+     * server of the pair (its installed adapters, from installedAdapters).
+     */
+    function readiness(row, list) {
+        if (row.mode !== 'cold') {
+            return [];
+        }
+        const out = [];
+        for (const s of list.filter(x => x.iobHost !== row.host)) {
+            const v = s.installed[row.adapter];
+            if (!v) {
+                out.push({ level: 'bad', text: `${row.adapter} is not installed on ${s.name}` });
+            } else if (row.version && v !== row.version) {
+                out.push({ level: 'warn', text: `${s.name} has ${row.adapter} ${v}, this instance ${row.version}` });
+            }
+        }
+        return out;
+    }
+
+    /** How a server's adapters differ from the other servers'. */
+    function adapterDiff(server, list) {
+        const missing = [];
+        const other = [];
+        for (const peer of list.filter(x => x !== server)) {
+            for (const [a, v] of Object.entries(peer.installed).sort(([x], [y]) => x.localeCompare(y))) {
+                const mine = server.installed[a];
+                if (!mine) {
+                    missing.push(a);
+                } else if (mine !== v) {
+                    other.push(`${a} ${mine} (${peer.name}: ${v})`);
+                }
+            }
+        }
+        return { missing, other };
+    }
+
+    return { servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, readiness, adapterDiff, MODES };
 });

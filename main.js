@@ -11,6 +11,10 @@ const bridge = require('./lib/nativeBridge');
 const { statusToStates, installCommand, STALE_MS, parseSwitchCommand } = require('./lib/status');
 const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
+const { installedAdapters } = require('./lib/installed');
+
+/** How often this host's installed adapters are written to the installedAdapters state. */
+const INSTALLED_MS = 10 * 60_000;
 
 /** Events kept in the `events` state. */
 const MAX_EVENTS = 100;
@@ -36,6 +40,8 @@ class Redundancy extends utils.Adapter {
         this.apiStatus = null;
         this.apiWhere = null;
         this.events = [];
+        this.skipsSaid = new Map();
+        this.installedTimer = null;
         this.on('ready', () => this.onReady());
         this.on('stateChange', (id, state) => this.onStateChange(id, state));
         this.on('unload', cb => this.onUnload(cb));
@@ -43,6 +49,8 @@ class Redundancy extends utils.Adapter {
 
     async onReady() {
         await this.ensureObjects();
+        await this.writeInstalled();
+        this.installedTimer = setInterval(() => this.writeInstalled().catch(() => {}), INSTALLED_MS);
         await this.setStateAsync('info.connection', false, true);
         let addon;
         try {
@@ -82,6 +90,15 @@ class Redundancy extends utils.Adapter {
         }
         this.timer = setInterval(() => this.poll(), POLL_MS);
         this.poll();
+    }
+
+    /** This host's node_modules (the folder this adapter is installed in). */
+    installed() {
+        return installedAdapters(path.join(__dirname, '..'));
+    }
+
+    async writeInstalled() {
+        await this.setStateAsync('installedAdapters', JSON.stringify(this.installed()), true);
     }
 
     /**
@@ -239,19 +256,27 @@ class Redundancy extends utils.Adapter {
             });
     }
 
-    async reportMoves(results) {
-        if (!results.length) {
-            return;
-        }
-        for (const r of results) {
+    async reportMoves({ moves, skipped }) {
+        for (const r of moves) {
             const how = r.waitedMs ? ` after ${r.waitedMs} ms for the old copy${r.timedOut ? ' (it did not stop)' : ''}` : '';
             if (r.ok) {
                 this.log.info(`moved ${r.id} from ${r.from} to ${this.host}${how}`);
+                if (r.warning) {
+                    this.log.warn(`${r.id}: ${r.warning}`);
+                }
             } else {
                 this.log.error(`could not move ${r.id} from ${r.from}: ${r.error}`);
             }
         }
-        await this.setStateAsync('lastMoves', JSON.stringify({ t: Date.now(), to: this.host, moves: results }), true);
+        // a primary checks every few seconds: say each held-back instance once, not each time
+        const newSkips = skipped.filter(k => this.skipsSaid.get(k.id) !== k.reason);
+        this.skipsSaid = new Map(skipped.map(k => [k.id, k.reason]));
+        for (const k of newSkips) {
+            this.log.error(`${k.id} stays where it is: ${k.reason}`);
+        }
+        if (moves.length || newSkips.length) {
+            await this.setStateAsync('lastMoves', JSON.stringify({ t: Date.now(), to: this.host, moves, skipped }), true);
+        }
     }
 
     /** Object and state access for lib/moves.js. */
@@ -264,6 +289,7 @@ class Redundancy extends utils.Adapter {
         return {
             getInstances: async () => (await all()).map(instanceFromObject).filter(Boolean),
             getPair: async () => pairHosts(await all()),
+            getInstalled: async () => this.installed(),
             extend: (id, common) => this.extendForeignObjectAsync(sys(id), { common }),
             isAlive: async id => (await this.getForeignStateAsync(`${sys(id)}.alive`))?.val === true,
             clearSigKill: id => this.delForeignStateAsync(`${sys(id)}.sigKill`).catch(() => {}),
@@ -277,6 +303,9 @@ class Redundancy extends utils.Adapter {
         try {
             if (this.timer) {
                 clearInterval(this.timer);
+            }
+            if (this.installedTimer) {
+                clearInterval(this.installedTimer);
             }
             this.api?.stop();
         } finally {

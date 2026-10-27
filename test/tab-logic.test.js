@@ -28,6 +28,8 @@ function pair(over = {}) {
         'redundancy.1.clientOptions': st('[{"db":"states","option":"keepAlive","severity":"error"}]'),
         'redundancy.1.engineVersion': st('0.1.0'),
         'redundancy.1.maintenanceUntil': st(0),
+        'redundancy.0.installedAdapters': st('{"modbus":"6.3.2","rockwell-enip":"0.2.1","mqtt":"7.0.0"}'),
+        'redundancy.1.installedAdapters': st('{"modbus":"6.3.2","rockwell-enip":"0.2.0"}'),
         ...over,
     };
     const instances = [
@@ -110,9 +112,27 @@ test('the instances table: every instance but the redundancy ones, with its mode
         { _id: 'system.adapter.admin.0', common: { host: 'iobStansiya486', enabled: true } },
         { _id: 'system.adapter.rockwell-enip.0', common: { host: 'iobStansiya486_b', enabled: false, redundancy: { mode: 'warm' } } },
     ]);
-    assert.deepStrictEqual(rows, [
-        { id: 'admin.0', host: 'iobStansiya486', enabled: true, mode: 'none' },
-        { id: 'modbus.0', host: 'iobStansiya486', enabled: true, mode: 'cold' },
-        { id: 'rockwell-enip.0', host: 'iobStansiya486_b', enabled: false, mode: 'none' },
-    ]);
+    assert.deepStrictEqual(
+        rows.map(r => [r.id, r.adapter, r.host, r.enabled, r.mode]),
+        [
+            ['admin.0', 'admin', 'iobStansiya486', true, 'none'],
+            ['modbus.0', 'modbus', 'iobStansiya486', true, 'cold'],
+            ['rockwell-enip.0', 'rockwell-enip', 'iobStansiya486_b', false, 'none'],
+        ],
+    );
+});
+
+test('a cold instance is ready to move only where its adapter is installed, ideally in its version', () => {
+    const list = pair();
+    const row = (id, host, version) => ({ id, adapter: id.split('.')[0], host, version, mode: 'cold' });
+    assert.deepStrictEqual(L.readiness(row('modbus.0', 'iobStansiya486', '6.3.2'), list), []);
+    assert.deepStrictEqual(L.readiness(row('mqtt.0', 'iobStansiya486', '7.0.0'), list), [{ level: 'bad', text: 'mqtt is not installed on B' }]);
+    assert.deepStrictEqual(L.readiness(row('rockwell-enip.0', 'iobStansiya486', '0.2.1'), list), [{ level: 'warn', text: 'B has rockwell-enip 0.2.0, this instance 0.2.1' }]);
+    assert.deepStrictEqual(L.readiness({ ...row('mqtt.0', 'iobStansiya486', '7.0.0'), mode: 'none' }, list), [], 'only cold instances move');
+});
+
+test('a server card says how its adapters differ from the other server', () => {
+    const [a, b] = pair();
+    assert.deepStrictEqual(L.adapterDiff(b, [a, b]), { missing: ['mqtt'], other: ['rockwell-enip 0.2.0 (A: 0.2.1)'] });
+    assert.deepStrictEqual(L.adapterDiff(a, [a, b]), { missing: [], other: ['rockwell-enip 0.2.1 (B: 0.2.0)'] });
 });
