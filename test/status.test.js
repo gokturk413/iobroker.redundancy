@@ -23,6 +23,7 @@ test('a fresh status file gives the role, master, epoch and peer', () => {
         epoch: 11,
         peer: 'Ok',
         maintenanceUntil: 0,
+        watchdogHost: 'A',
     });
     assert.strictEqual(statusToStates({ ...fresh, maintenanceUntil: 1793034074471 }, fresh.t).maintenanceUntil, 1793034074471);
 });
@@ -53,4 +54,14 @@ test('the install command fits the OS', () => {
         installCommand('win32', 'C:\\iob\\redundancy-watchdog.exe', 'C:\\ProgramData\\SCADA\\watchdog.json'),
         '"C:\\iob\\redundancy-watchdog.exe" install "C:\\ProgramData\\SCADA\\watchdog.json"   (admin shell)',
     );
+});
+
+test('a switchover command is a host name, or JSON with the host and a reason', () => {
+    const { parseSwitchCommand } = require('../lib/status');
+    assert.deepStrictEqual(parseSwitchCommand(' B '), { to: 'B', reason: '' });
+    assert.deepStrictEqual(parseSwitchCommand('{"to":"B","reason":"Windows updates on A"}'), { to: 'B', reason: 'Windows updates on A' });
+    assert.strictEqual(parseSwitchCommand(''), null);
+    assert.strictEqual(parseSwitchCommand('{"reason":"no target"}'), null);
+    assert.strictEqual(parseSwitchCommand('{broken'), null, 'JSON that does not parse is not a host name either');
+    assert.strictEqual(parseSwitchCommand('{"to":"B","reason":"' + 'x'.repeat(600) + '"}').reason.length, 500);
 });

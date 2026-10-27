@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Redundancy</title>
+<script src="../../lib/js/socket.io.js"></script>
+<script src="tab-logic.js"></script>
+<style>
+:root {
+    --bg: #0f1318; --card: #161b22; --line: #262d38; --line2: #3a4453; --text: #e6e9ee; --dim: #9aa5b4;
+    --accent: #3b82f6; --ok-bg: #10301f; --ok: #6ee7a0; --warn-bg: #3a2c0c; --warn: #fbcf6b; --bad-bg: #3d1712; --bad: #ffb4a6;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+:root[data-theme="light"] {
+    --bg: #f4f6f9; --card: #ffffff; --line: #dde2e9; --line2: #c3cad4; --text: #1b2330; --dim: #5b6676;
+    --accent: #1d63d8; --ok-bg: #e2f5ea; --ok: #136b3c; --warn-bg: #fdf1d6; --warn: #7a5200; --bad-bg: #fde4df; --bad: #9b2414;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 24px; background: var(--card); border-bottom: 1px solid var(--line); }
+header h1 { margin: 0; font-size: 20px; font-weight: 600; flex: 1 1 auto; }
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 999px; font-size: 13px; background: var(--line); }
+.pill.ok { background: var(--ok-bg); color: var(--ok); font-weight: 600; }
+.pill.warn { background: var(--warn-bg); color: var(--warn); font-weight: 600; }
+.pill.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
+main { max-width: 1376px; margin: 0 auto; padding: 16px 24px 40px; display: flex; flex-direction: column; gap: 20px; }
+nav { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); }
+nav a { padding: 10px 16px; color: var(--dim); text-decoration: none; border-bottom: 2px solid transparent; }
+nav a[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.controls .what { flex: 1 1 320px; }
+.what b { display: block; font-size: 15px; }
+.dim { color: var(--dim); font-size: 13px; }
+button, .btn { min-height: 40px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--line2); background: var(--line); color: var(--text); font: inherit; font-weight: 500; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.server h2 { margin: 0; font-size: 17px; }
+.server .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
+.badge { padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; letter-spacing: .04em; background: var(--line); }
+.badge.primary { background: var(--ok-bg); color: var(--ok); }
+.badge.standby { background: var(--warn-bg); color: var(--warn); }
+.badge.fenced, .badge.offline { background: var(--bad-bg); color: var(--bad); }
+.server.primary { border-color: #2f6b4a; }
+dl { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; font-size: 13px; }
+dt { color: var(--dim); }
+dd { margin: 2px 0 0; font-family: var(--mono); overflow-wrap: anywhere; }
+.good { color: var(--ok); } .meh { color: var(--warn); } .badc { color: var(--bad); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--dim); font-weight: 500; padding: 8px 12px 8px 0; }
+td { padding: 9px 12px 9px 0; border-top: 1px solid var(--line); vertical-align: top; }
+td.t { font-family: var(--mono); color: var(--dim); white-space: nowrap; }
+.scroll { overflow-x: auto; }
+tr.warn td.title { color: var(--warn); } tr.bad td.title { color: var(--bad); }
+select { min-height: 36px; border-radius: 6px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font: inherit; padding: 0 8px; }
+dialog { width: min(720px, calc(100% - 32px)); background: var(--card); color: var(--text); border: 1px solid var(--line2); border-radius: 12px; padding: 0; }
+dialog::backdrop { background: rgba(0, 0, 0, .55); }
+dialog header { border-radius: 12px 12px 0 0; flex-direction: column; align-items: flex-start; }
+dialog .body { padding: 18px 24px; display: flex; flex-direction: column; gap: 16px; }
+dialog footer { padding: 14px 24px 20px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line2); border-radius: 8px; padding: 10px 12px; resize: vertical; width: 100%; }
+label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
+.msg { padding: 10px 14px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); }
+.msg.bad { background: var(--bad-bg); color: var(--bad); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+    <h1>Redundancy</h1>
+    <span id="summary" class="pill">connecting…</span>
+    <span id="here" class="pill" hidden></span>
+    <span id="lockpill" class="pill warn" hidden></span>
+</header>
+<main>
+    <nav aria-label="Redundancy sections">
+        <a href="#servers" data-view="servers">Servers</a>
+        <a href="#instances" data-view="instances">Instances</a>
+        <a href="#events" data-view="events">Events</a>
+        <a href="#settings" data-view="settings">Settings</a>
+    </nav>
+    <div id="notice" class="msg" hidden></div>
+
+    <section id="view-servers" aria-label="Servers">
+        <div class="card controls">
+            <div class="what"><b id="armed">…</b><span class="dim">A planned switchover pauses writes for about 1–2 s and loses nothing. Automatic failover never switches back by itself.</span></div>
+            <span id="switchbuttons"></span>
+            <button type="button" id="lockbtn">Maintenance lock</button>
+        </div>
+        <div id="servers" class="grid" style="margin-top: 16px"></div>
+        <div class="grid" style="margin-top: 16px">
+            <div class="card"><b>Last switch</b><div id="lastswitch" class="dim" style="margin-top: 6px">none yet</div></div>
+            <div class="card"><b>Cold instances moved last</b><div id="lastmoves" class="dim" style="margin-top: 6px">none yet</div></div>
+        </div>
+        <div class="card" style="margin-top: 16px">
+            <div style="display: flex; justify-content: space-between; gap: 12px"><b>Recent events</b><a href="#events" class="dim">All events</a></div>
+            <div class="scroll"><table><tbody id="recent"></tbody></table></div>
+        </div>
+    </section>
+
+    <section id="view-instances" aria-label="Instances" hidden>
+        <div class="card">
+            <b>Which instances follow the primary</b>
+            <p class="dim" style="margin: 6px 0 12px"><b style="display: inline">cold</b>: runs only on the primary; on a switch it moves there and starts (any adapter, a few seconds).
+            <b style="display: inline">none</b>: stays on its host (admin, web, …). <b style="display: inline">hot</b> needs the adapter's own support and comes later. Saving a mode restarts that instance.</p>
+            <div class="scroll"><table><thead><tr><th>Instance</th><th>Runs on</th><th>Enabled</th><th>Mode</th><th></th></tr></thead><tbody id="instances"></tbody></table></div>
+        </div>
+    </section>
+
+    <section id="view-events" aria-label="Events" hidden>
+        <div class="card"><div class="scroll"><table><thead><tr><th>Time</th><th>Host</th><th>Event</th><th>Detail</th></tr></thead><tbody id="events"></tbody></table></div></div>
+    </section>
+
+    <section id="view-settings" aria-label="Settings" hidden>
+        <div class="card">
+            <b>Settings of each host's instance</b>
+            <p class="dim" style="margin: 6px 0 12px">Status file, API and API token are set per host (each host has its own watchdog). Switch timing, links and the witness are in the watchdog config of each host.</p>
+            <ul id="settings"></ul>
+        </div>
+    </section>
+</main>
+
+<dialog id="swdialog" aria-labelledby="swtitle">
+    <header><h1 id="swtitle" style="font-size: 18px">Switch over?</h1><span id="swsub" class="dim"></span></header>
+    <div class="body">
+        <div>
+            <b>What will happen</b>
+            <ol class="dim" style="margin-top: 6px">
+                <li>Writes on the primary's Redis pause.</li>
+                <li>The target waits until it has every byte; if it cannot catch up in time, nothing changes.</li>
+                <li>Sentinel promotes the target's Redis; the old primary's Redis becomes its replica at once.</li>
+                <li>Cold instances stop on the old primary and start on the new one.</li>
+            </ol>
+        </div>
+        <label for="swreason"><b>Reason</b> <span class="dim">(kept in the event log)</span></label>
+        <textarea id="swreason" rows="3" maxlength="500" placeholder="e.g. Windows updates on A"></textarea>
+        <label class="check"><input type="checkbox" id="swlock"> Lock automatic failover for 60 minutes (maintenance on the old primary)</label>
+    </div>
+    <footer>
+        <button type="button" id="swcancel">Cancel</button>
+        <button type="button" id="swgo" class="primary">Switch over</button>
+    </footer>
+</dialog>
+
+<script>
+'use strict';
+(function () {
+    const L = window.RedundancyTab;
+    const $ = id => document.getElementById(id);
+    const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const time = t => (t ? new Date(t).toLocaleString() : '');
+    const q = new URLSearchParams(location.search);
+    if (q.get('react') === 'light' || (!q.get('react') && window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches)) {
+        document.documentElement.dataset.theme = 'light';
+    }
+
+    let instances = [];   // [{n, host}]
+    const states = {};    // id -> state
+    let objects = [];     // instance objects for the Instances view
+    let target = null;    // {name, via} of the open dialog
+    let drawTimer = null;
+
+    const socket = io.connect(location.href, { name: 'redundancy.tab', timeout: 5000 });
+    const call = (cmd, ...args) => new Promise((resolve, reject) => socket.emit(cmd, ...args, (err, res) => (err ? reject(new Error(String(err))) : resolve(res))));
+
+    function notice(text, bad) {
+        const n = $('notice');
+        n.hidden = !text;
+        n.textContent = text || '';
+        n.className = bad ? 'msg bad' : 'msg';
+    }
+
+    async function load() {
+        const objs = await call('getForeignObjects', 'system.adapter.*', 'instance');
+        objects = Object.values(objs || {});
+        instances = objects
+            .filter(o => /^system\.adapter\.redundancy\.\d+$/.test(o._id))
+            .map(o => ({ n: o._id.split('.').pop(), host: o.common && o.common.host }));
+        Object.assign(states, (await call('getStates', 'redundancy.*')) || {});
+        socket.emit('subscribe', 'redundancy.*');
+        draw();
+        drawInstances();
+    }
+
+    socket.on('connect', () => load().catch(e => notice(`cannot read the redundancy states: ${e.message}`, true)));
+    socket.on('stateChange', (id, state) => {
+        if (!id.startsWith('redundancy.')) {
+            return;
+        }
+        states[id] = state;
+        if (!drawTimer) {
+            drawTimer = setTimeout(() => { drawTimer = null; draw(); }, 200);
+        }
+    });
+
+    function draw() {
+        const now = Date.now();
+        const list = L.servers(instances, states);
+        const sum = L.summary(list, now);
+        const s = $('summary');
+        s.textContent = sum.text;
+        s.className = `pill ${sum.redundant ? 'ok' : sum.primary ? 'warn' : 'bad'}`;
+        const here = list.find(x => x.instance === `redundancy.${q.toString().split('&')[0].replace(/[^0-9]/g, '') || '0'}`);
+        $('here').hidden = !here;
+        if (here) {
+            $('here').textContent = `This instance: ${here.name} · ${here.role.toUpperCase()}`;
+        }
+        $('lockpill').hidden = !sum.maintenanceUntil;
+        $('lockpill').textContent = sum.maintenanceUntil ? `Maintenance lock until ${new Date(sum.maintenanceUntil).toLocaleTimeString()}` : '';
+        $('armed').textContent = sum.maintenanceUntil ? 'Automatic failover is locked (maintenance)' : 'Automatic failover is armed';
+        $('lockbtn').textContent = sum.maintenanceUntil ? 'Lift the lock' : 'Maintenance lock (60 min)';
+        $('lockbtn').disabled = !sum.primary && !list.some(x => x.connected);
+
+        $('switchbuttons').innerHTML = L.switchTargets(list)
+            .map(t => `<button type="button" class="primary" data-to="${esc(t.name)}" data-via="${esc(t.via)}">Switch over to ${esc(t.name)}…</button>`)
+            .join(' ') || '<span class="dim">No ready standby to switch to</span>';
+
+        $('servers').innerHTML = list.map(serverCard).join('') || '<div class="card dim">No redundancy instance found</div>';
+
+        const sw = list.map(x => { try { return JSON.parse((states[`${x.instance}.lastSwitch`] || {}).val || 'null'); } catch { return null; } })
+            .filter(Boolean).sort((a, b) => (b.t || 0) - (a.t || 0))[0];
+        $('lastswitch').textContent = sw ? `${time(sw.t)} · ${L.describeEvent({ event: 'switchover', ...sw }).title} · ${L.describeEvent({ event: 'switchover', ...sw }).detail}${sw.reason ? ` · "${sw.reason}"` : ''}` : 'none yet';
+        const mv = list.map(x => { try { return JSON.parse((states[`${x.instance}.lastMoves`] || {}).val || 'null'); } catch { return null; } })
+            .filter(Boolean).sort((a, b) => (b.t || 0) - (a.t || 0))[0];
+        $('lastmoves').textContent = mv ? `${time(mv.t)} · to ${mv.to}: ${mv.moves.map(m => `${m.id}${m.ok ? '' : ' (failed)'}`).join(', ')}` : 'none yet';
+
+        const events = L.mergeEvents(list.map(x => ({ host: x.name, events: parseEvents(x.instance) })), 100);
+        $('recent').innerHTML = events.slice(0, 6).map(e => eventRow(e, false)).join('') || '<tr><td class="dim">no events yet</td></tr>';
+        $('events').innerHTML = events.map(e => eventRow(e, true)).join('') || '<tr><td class="dim">no events yet</td></tr>';
+
+        $('settings').innerHTML = list.map(x => `<li><a target="_top" href="/#tab-instances/config/system.adapter.${esc(x.instance)}">${esc(x.instance)}</a> on ${esc(x.iobHost)} (${esc(x.name)})</li>`).join('');
+    }
+
+    /** Only on load and after a save: a redraw on every state change would undo a choice not saved yet. */
+    function drawInstances() {
+        $('instances').innerHTML = L.instanceRows(objects).map(r => `<tr>
+            <td style="font-family: var(--mono)">${esc(r.id)}</td><td>${esc(r.host)}</td><td>${r.enabled ? 'yes' : 'no'}</td>
+            <td><select data-id="${esc(r.id)}" aria-label="mode of ${esc(r.id)}">${L.MODES.map(m => `<option value="${m}"${m === r.mode ? ' selected' : ''}${m === 'hot' ? ' disabled' : ''}>${m}${m === 'hot' ? ' (later)' : ''}</option>`).join('')}</select></td>
+            <td><button type="button" data-save="${esc(r.id)}" disabled>Save</button></td></tr>`).join('');
+    }
+
+    function parseEvents(instance) {
+        try { return JSON.parse((states[`${instance}.events`] || {}).val || '[]'); } catch { return []; }
+    }
+
+    function serverCard(x) {
+        const role = x.connected ? x.role : 'offline';
+        const ready = role === 'standby' && (x.peer === 'Ok' || x.peer === 'Degraded');
+        return `<article class="card server ${role === 'primary' ? 'primary' : ''}">
+            <div class="head"><div><h2>${esc(x.name)} · ${esc(x.iobHost)}</h2><span class="dim">${esc(x.instance)}</span></div>
+            <span class="badge ${esc(role)}">${esc(role.toUpperCase())}${ready ? ' · READY' : ''}</span></div>
+            <dl>
+                <div><dt>Watchdog</dt><dd class="${x.connected ? 'good' : 'badc'}">${x.connected ? 'running' : 'not running'}</dd></div>
+                <div><dt>Peer (heartbeat)</dt><dd class="${x.peer === 'Ok' ? 'good' : x.peer === 'Degraded' ? 'meh' : 'badc'}">${esc(x.peer || '—')}</dd></div>
+                <div><dt>Redis master</dt><dd>${esc(x.primary || '—')}</dd></div>
+                <div><dt>Lease epoch</dt><dd>${x.role === 'primary' && x.epoch ? esc(x.epoch) : '—'}</dd></div>
+                <div><dt>Client options</dt><dd class="${x.clientIssues ? 'badc' : 'good'}">${x.clientIssues ? `${x.clientIssues} to fix` : 'all set'}</dd></div>
+                <div><dt>Engine</dt><dd>${esc(x.engine || '—')}</dd></div>
+            </dl></article>`;
+    }
+
+    function eventRow(e, full) {
+        const d = L.describeEvent(e);
+        return `<tr class="${esc(d.level)}"><td class="t">${esc(full ? time(e.t) : new Date(e.t || 0).toLocaleTimeString())}</td>${full ? `<td>${esc(e.host)}</td>` : ''}
+            <td class="title">${esc(d.title)}</td><td class="dim">${esc(d.detail)}${full ? '' : `${d.detail ? ' · ' : ''}${esc(e.host)}`}</td></tr>`;
+    }
+
+    function show() {
+        const view = (location.hash || '#servers').slice(1);
+        for (const a of document.querySelectorAll('nav a')) {
+            if (a.dataset.view === view) { a.setAttribute('aria-current', 'page'); } else { a.removeAttribute('aria-current'); }
+        }
+        for (const v of ['servers', 'instances', 'events', 'settings']) {
+            $(`view-${v}`).hidden = v !== view;
+        }
+    }
+    window.addEventListener('hashchange', show);
+    show();
+
+    async function command(id, val) {
+        await call('setState', id, { val, ack: false });
+    }
+
+    document.addEventListener('click', async ev => {
+        const b = ev.target.closest('button');
+        if (!b) {
+            return;
+        }
+        if (b.dataset.to) {
+            target = { name: b.dataset.to, via: b.dataset.via };
+            $('swtitle').textContent = `Switch over to ${target.name}?`;
+            $('swsub').textContent = `${target.name} becomes primary; the old primary stays running as a standby.`;
+            $('swreason').value = '';
+            $('swlock').checked = false;
+            $('swdialog').showModal();
+        } else if (b.id === 'swcancel') {
+            $('swdialog').close();
+        } else if (b.id === 'swgo' && target) {
+            $('swdialog').close();
+            try {
+                if ($('swlock').checked) {
+                    await command(`${target.via}.control.maintenance`, 60);
+                }
+                await command(`${target.via}.control.switchover`, JSON.stringify({ to: target.name, reason: $('swreason').value.trim() }));
+                notice(`Switchover to ${target.name} requested; it shows up in the events in a few seconds.`);
+            } catch (e) {
+                notice(`switchover: ${e.message}`, true);
+            }
+        } else if (b.id === 'lockbtn') {
+            const list = L.servers(instances, states);
+            const sum = L.summary(list, Date.now());
+            const via = (sum.primary || list.find(x => x.connected) || {}).instance;
+            try {
+                await command(`${via}.control.maintenance`, sum.maintenanceUntil ? 0 : 60);
+            } catch (e) {
+                notice(`maintenance: ${e.message}`, true);
+            }
+        } else if (b.dataset.save) {
+            const id = b.dataset.save;
+            const sel = document.querySelector(`select[data-id="${CSS.escape(id)}"]`);
+            try {
+                await call('extendObject', `system.adapter.${id}`, { common: { redundancy: { mode: sel.value } } });
+                const o = objects.find(x => x._id === `system.adapter.${id}`);
+                if (o) {
+                    o.common.redundancy = { ...(o.common.redundancy || {}), mode: sel.value };
+                }
+                notice(`${id}: mode ${sel.value} saved`);
+                drawInstances();
+            } catch (e) {
+                notice(`${id}: ${e.message}`, true);
+            }
+        }
+    });
+
+    document.addEventListener('change', ev => {
+        const sel = ev.target.closest('select[data-id]');
+        if (sel) {
+            const btn = document.querySelector(`button[data-save="${CSS.escape(sel.dataset.id)}"]`);
+            if (btn) { btn.disabled = false; }
+        }
+    });
+})();
+</script>
+</body>
+</html>

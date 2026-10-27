@@ -8,7 +8,7 @@ const path = require('node:path');
 const utils = require('@iobroker/adapter-core');
 
 const bridge = require('./lib/nativeBridge');
-const { statusToStates, installCommand, STALE_MS } = require('./lib/status');
+const { statusToStates, installCommand, STALE_MS, parseSwitchCommand } = require('./lib/status');
 const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
 
@@ -149,11 +149,11 @@ class Redundancy extends utils.Adapter {
         const by = state.user ? String(state.user).replace(/^system\.user\./, '') : String(state.from || '');
         let req;
         if (what === 'switchover') {
-            const to = String(state.val ?? '').trim();
-            if (!to) {
+            const cmd = parseSwitchCommand(state.val);
+            if (!cmd) {
                 return;
             }
-            req = { op: 'switchover', to, by, reason: `${what} from ${state.from || 'unknown'}` };
+            req = { op: 'switchover', to: cmd.to, by, reason: cmd.reason || `${what} from ${state.from || 'unknown'}` };
         } else if (what === 'maintenance') {
             const minutes = Math.max(0, Math.round(Number(state.val) || 0));
             req = { op: 'maintenance', minutes, by, reason: `${what} from ${state.from || 'unknown'}` };

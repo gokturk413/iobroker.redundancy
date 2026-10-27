@@ -58,7 +58,16 @@
       {
         "admin": ">=7.0.0"
       }
-    ]
+    ],
+    "adminTab": {
+      "singleton": true,
+      "name": {
+        "en": "Redundancy",
+        "de": "Redundanz",
+        "ru": "Резервирование"
+      },
+      "fa-icon": "dns"
+    }
   },
   "native": {
     "statusFile": "",
@@ -134,6 +143,19 @@
       "common": {
         "role": "text",
         "name": "The other server as the heartbeat links see it",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
+    },
+    {
+      "_id": "watchdogHost",
+      "type": "state",
+      "common": {
+        "role": "text",
+        "name": "This host in the watchdog config (e.g. A): the name a switchover targets",
         "type": "string",
         "read": true,
         "write": false,
