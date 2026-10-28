@@ -164,6 +164,11 @@ test('an instance object becomes what planMoves reads; an unknown mode counts as
     assert.strictEqual(instanceFromObject({ _id: 'system.adapter.x.0', common: {} }), null, 'no host');
 });
 
+test('until the hosts can run an instance hot (H3), a hot instance follows the primary like a cold one', () => {
+    const o = { _id: 'system.adapter.rockwell-enip.0', common: { host: A, enabled: true, redundancy: { mode: 'hot', hot: true } } };
+    assert.strictEqual(instanceFromObject(o).mode, 'cold');
+});
+
 test('the pair is every host that runs a redundancy instance', () => {
     const rows = [
         { _id: 'system.adapter.redundancy.0', common: { host: A } },

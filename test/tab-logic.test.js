@@ -122,6 +122,41 @@ test('the instances table: every instance but the redundancy ones, with its mode
     );
 });
 
+test('a line only one server may drive is found in the instance settings', () => {
+    const r = native => L.exclusiveResource(native);
+    assert.deepStrictEqual(r({ params: { type: 'serial', comName: '/dev/ttyS0', bind: '0.0.0.0', port: 502 } }), { kind: 'serial', text: 'serial line /dev/ttyS0' });
+    assert.deepStrictEqual(r({ params: { type: 'tcprtu', bind: '192.168.1.30', port: 4001 } }), { kind: 'single-client', text: 'RTU over TCP 192.168.1.30:4001' });
+    assert.strictEqual(r({ params: { type: 'tcp', bind: '192.168.1.30', port: 502, comName: '/dev/ttyUSB0' } }), null, 'TCP chosen: the port left in the settings is not used');
+    assert.strictEqual(r({ params: { type: 'tcp-ssl', bind: '192.168.1.30', port: 802 } }), null);
+    // any adapter: a serial device path, or a mode that says RTU over TCP
+    assert.deepStrictEqual(r({ device: { path: 'COM3' } }), { kind: 'serial', text: 'serial line COM3' });
+    assert.deepStrictEqual(r({ usbPath: '/dev/serial/by-id/usb-FTDI-if00' }), { kind: 'serial', text: 'serial line /dev/serial/by-id/usb-FTDI-if00' });
+    assert.deepStrictEqual(r({ protocol: 'RTU over TCP', host: '10.0.0.5', port: 502 }), { kind: 'single-client', text: 'RTU over TCP 10.0.0.5:502' });
+    assert.strictEqual(r({ ip: '192.168.1.1', note: 'see COM3 in the manual' }), null, 'a path inside a text is not a setting');
+    assert.strictEqual(r(undefined), null);
+});
+
+test('choosing hot says what can go wrong; an exclusive line is a reason to stay cold', () => {
+    const rows = L.instanceRows([
+        { _id: 'system.adapter.modbus.0', common: { host: 'A', redundancy: { mode: 'cold' } }, native: { params: { type: 'serial', comName: '/dev/ttyS0' } } },
+        { _id: 'system.adapter.modbus.1', common: { host: 'A' }, native: { params: { type: 'tcprtu', bind: '192.168.1.30', port: 4001 } } },
+        { _id: 'system.adapter.rockwell-enip.0', common: { host: 'A', redundancy: { hot: true } }, native: { ip: '192.168.1.1' } },
+        { _id: 'system.adapter.opcua.0', common: { host: 'A' }, native: { endpoint: 'opc.tcp://localhost:4840' } },
+    ]);
+    const by = id => rows.find(x => x.id === id);
+    assert.deepStrictEqual(by('modbus.0').resource, { kind: 'serial', text: 'serial line /dev/ttyS0' });
+    assert.strictEqual(by('rockwell-enip.0').hotDeclared, true);
+    assert.strictEqual(by('opcua.0').hotDeclared, false);
+
+    const levels = id => L.hotCheck(by(id)).map(w => w.level);
+    assert.deepStrictEqual(levels('modbus.0'), ['bad', 'warn']);
+    assert.match(L.hotCheck(by('modbus.0'))[0].text, /serial line \/dev\/ttyS0.*one master/);
+    assert.match(L.hotCheck(by('modbus.1'))[0].text, /RTU over TCP 192\.168\.1\.30:4001.*one client/);
+    assert.deepStrictEqual(levels('rockwell-enip.0'), [], 'declares hot, no exclusive line');
+    assert.deepStrictEqual(levels('opcua.0'), ['warn']);
+    assert.match(L.hotCheck(by('opcua.0'))[0].text, /does not declare hot support/);
+});
+
 test('a cold instance is ready to move only where its adapter is installed, ideally in its version', () => {
     const list = pair();
     const row = (id, host, version) => ({ id, adapter: id.split('.')[0], host, version, mode: 'cold' });
@@ -129,6 +164,7 @@ test('a cold instance is ready to move only where its adapter is installed, idea
     assert.deepStrictEqual(L.readiness(row('mqtt.0', 'iobStansiya486', '7.0.0'), list), [{ level: 'bad', text: 'mqtt is not installed on B' }]);
     assert.deepStrictEqual(L.readiness(row('rockwell-enip.0', 'iobStansiya486', '0.2.1'), list), [{ level: 'warn', text: 'B has rockwell-enip 0.2.0, this instance 0.2.1' }]);
     assert.deepStrictEqual(L.readiness({ ...row('mqtt.0', 'iobStansiya486', '7.0.0'), mode: 'none' }, list), [], 'only cold instances move');
+    assert.strictEqual(L.readiness({ ...row('mqtt.0', 'iobStansiya486', '7.0.0'), mode: 'hot' }, list).length, 1, 'hot moves like cold until H3');
 });
 
 test('a server card says how its adapters differ from the other server', () => {

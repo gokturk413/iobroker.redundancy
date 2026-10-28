@@ -157,6 +157,66 @@
         }
     }
 
+    const SERIAL_PATH = /^(\/dev\/(tty|cu\.|serial\/|rfcomm)\S*|COM\d+)$/i;
+    const RTU_OVER_TCP = /^(rtu[\s_-]*(over|via)?[\s_-]*tcp|tcp[\s_-]*rtu)$/i;
+    /** ioBroker.modbus: native.params.type. */
+    const MODBUS_TYPES = ['tcp', 'tcp-ssl', 'serial', 'tcprtu'];
+
+    function findResource(o, depth) {
+        if (!o || typeof o !== 'object' || depth > 3) {
+            return null;
+        }
+        for (const v of Object.values(o)) {
+            const s = typeof v === 'string' ? v.trim() : '';
+            if (SERIAL_PATH.test(s)) {
+                return { kind: 'serial', text: `serial line ${s}` };
+            }
+            if (RTU_OVER_TCP.test(s)) {
+                const host = o.host || o.ip || o.bind || o.address || '';
+                return { kind: 'single-client', text: `RTU over TCP${host ? ` ${host}${o.port ? `:${o.port}` : ''}` : ''}` };
+            }
+        }
+        for (const v of Object.values(o)) {
+            const r = findResource(v, depth + 1);
+            if (r) {
+                return r;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * A line only one server may drive, from an instance's settings: a serial bus (one master)
+     * or RTU over TCP (the gateway takes one client). Such an instance must not run hot.
+     */
+    function exclusiveResource(native) {
+        const p = native && native.params;
+        if (p && MODBUS_TYPES.includes(p.type)) {
+            if (p.type === 'serial') {
+                return { kind: 'serial', text: `serial line ${p.comName || '(port not set)'}` };
+            }
+            return p.type === 'tcprtu' ? { kind: 'single-client', text: `RTU over TCP ${p.bind}:${p.port}` } : null;
+        }
+        return findResource(native, 0);
+    }
+
+    /** What can go wrong when this instance runs hot (on every server at once). */
+    function hotCheck(row) {
+        const out = [];
+        if (row.resource) {
+            out.push({
+                level: 'bad',
+                text: row.resource.kind === 'serial'
+                    ? `${row.resource.text}: a serial bus has one master; hot would make both servers drive it. Keep it cold.`
+                    : `${row.resource.text}: the gateway takes one client; the standby's connection would block or drop the primary's. Keep it cold.`,
+            });
+        }
+        if (!row.hotDeclared) {
+            out.push({ level: 'warn', text: `${row.adapter} does not declare hot support: it may write to the device from both servers.` });
+        }
+        return out;
+    }
+
     /** Every instance but the redundancy ones, with its redundancy mode (unknown = none). */
     function instanceRows(objects) {
         return objects
@@ -172,6 +232,9 @@
                     enabled: c.enabled === true,
                     mode,
                     version: typeof c.version === 'string' ? c.version : '',
+                    resource: exclusiveResource(o.native),
+                    // the adapter's io-package says it holds back on a standby
+                    hotDeclared: Boolean(c.redundancy && c.redundancy.hot === true),
                 };
             })
             .sort((a, b) => a.id.localeCompare(b.id));
@@ -182,7 +245,8 @@
      * server of the pair (its installed adapters, from installedAdapters).
      */
     function readiness(row, list) {
-        if (row.mode !== 'cold') {
+        // hot moves like cold until the hosts can run it on every server (H3)
+        if (row.mode !== 'cold' && row.mode !== 'hot') {
             return [];
         }
         const out = [];
@@ -302,5 +366,5 @@
         return { servers, cluster, timing, links, clientOptions };
     }
 
-    return { servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, readiness, adapterDiff, settingsView, MODES };
+    return { servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES };
 });

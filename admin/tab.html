@@ -105,7 +105,8 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         <div class="card">
             <b>Which instances follow the primary</b>
             <p class="dim" style="margin: 6px 0 12px"><b style="display: inline">cold</b>: runs only on the primary; on a switch it moves there and starts (any adapter, a few seconds).
-            <b style="display: inline">none</b>: stays on its host (admin, web, …). <b style="display: inline">hot</b> needs the adapter's own support and comes later. Saving a mode restarts that instance.</p>
+            <b style="display: inline">hot</b>: runs on every server, only the primary writes; the adapter must hold back on the standby (its io-package says <code>common.redundancy.hot</code>). Until the hosts can run one instance on every server (H3), a hot instance moves like a cold one.
+            <b style="display: inline">none</b>: stays on its host (admin, web, …). A serial line or RTU over TCP takes only one master: keep such an instance cold. Saving a mode restarts that instance.</p>
             <div class="scroll"><table><thead><tr><th>Instance</th><th>Runs on</th><th>Enabled</th><th>Mode</th><th></th><th>Other server</th></tr></thead><tbody id="instances"></tbody></table></div>
         </div>
     </section>
@@ -176,6 +177,16 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     </footer>
 </dialog>
 
+<dialog id="hotdialog" aria-labelledby="hottitle">
+    <header><h1 id="hottitle" style="font-size: 18px">Run it hot?</h1><span class="dim">Hot runs the instance on every server at once; only the primary may write.</span></header>
+    <div class="body"><ul id="hotwarnings" style="margin: 0; display: flex; flex-direction: column; gap: 8px"></ul></div>
+    <footer>
+        <button type="button" id="hotcancel">Cancel</button>
+        <button type="button" id="hotgo">Use hot anyway</button>
+        <button type="button" id="hotcold" class="primary">Make it cold</button>
+    </footer>
+</dialog>
+
 <script>
 'use strict';
 (function () {
@@ -191,6 +202,8 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     let instances = [];   // [{n, host}]
     const states = {};    // id -> state
     let objects = [];     // instance objects for the Instances view
+    let rows = [];        // instanceRows(objects), as drawn
+    let hotFor = null;    // instance id of the open "run it hot?" dialog
     let target = null;    // {name, via} of the open dialog
     let drawTimer = null;
 
@@ -303,22 +316,39 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
 
     /** Only on load and after a save: a redraw on every state change would undo a choice not saved yet. */
     function drawInstances() {
-        $('instances').innerHTML = L.instanceRows(objects).map(r => `<tr>
-            <td style="font-family: var(--mono)">${esc(r.id)}</td><td>${esc(r.host)}</td><td>${r.enabled ? 'yes' : 'no'}</td>
-            <td><select data-id="${esc(r.id)}" aria-label="mode of ${esc(r.id)}">${L.MODES.map(m => `<option value="${m}"${m === r.mode ? ' selected' : ''}${m === 'hot' ? ' disabled' : ''}>${m}${m === 'hot' ? ' (later)' : ''}</option>`).join('')}</select></td>
+        rows = L.instanceRows(objects);
+        $('instances').innerHTML = rows.map(r => `<tr>
+            <td><span style="font-family: var(--mono)">${esc(r.id)}</span>${r.resource ? `<br><span class="dim">${esc(r.resource.text)} · one master only</span>` : ''}</td>
+            <td>${esc(r.host)}</td><td>${r.enabled ? 'yes' : 'no'}</td>
+            <td><select data-id="${esc(r.id)}" aria-label="mode of ${esc(r.id)}">${L.MODES.map(m => `<option value="${m}"${m === r.mode ? ' selected' : ''}>${m}</option>`).join('')}</select></td>
             <td><button type="button" data-save="${esc(r.id)}" disabled>Save</button></td>
             <td>${readyCell(r)}</td></tr>`).join('');
     }
 
-    /** For a cold instance: can the other server start it? */
+    /** For an instance that follows the primary: can the other server start it; for hot, what can go wrong. */
     function readyCell(r) {
-        if (r.mode !== 'cold') {
+        if (r.mode !== 'cold' && r.mode !== 'hot') {
             return '<span class="dim">—</span>';
         }
-        const issues = L.readiness(r, L.servers(instances, states));
+        const issues = [...(r.mode === 'hot' ? L.hotCheck(r) : []), ...L.readiness(r, L.servers(instances, states))];
+        const cold = r.mode === 'hot' && r.resource ? ` <button type="button" data-cold="${esc(r.id)}">Make it cold</button>` : '';
         return issues.length
-            ? issues.map(i => `<span class="${i.level === 'bad' ? 'badc' : 'meh'}">${esc(i.text)}</span>`).join('<br>')
+            ? issues.map(i => `<span class="${i.level === 'bad' ? 'badc' : 'meh'}">${esc(i.text)}</span>`).join('<br>') + cold
             : '<span class="good">ready</span>';
+    }
+
+    async function saveMode(id, mode) {
+        try {
+            await call('extendObject', `system.adapter.${id}`, { common: { redundancy: { mode } } });
+            const o = objects.find(x => x._id === `system.adapter.${id}`);
+            if (o) {
+                o.common.redundancy = { ...(o.common.redundancy || {}), mode };
+            }
+            notice(`${id}: mode ${mode} saved`);
+            drawInstances();
+        } catch (e) {
+            notice(`${id}: ${e.message}`, true);
+        }
     }
 
     function parseEvents(instance) {
@@ -417,18 +447,31 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             }
         } else if (b.dataset.save) {
             const id = b.dataset.save;
-            const sel = document.querySelector(`select[data-id="${CSS.escape(id)}"]`);
-            try {
-                await call('extendObject', `system.adapter.${id}`, { common: { redundancy: { mode: sel.value } } });
-                const o = objects.find(x => x._id === `system.adapter.${id}`);
-                if (o) {
-                    o.common.redundancy = { ...(o.common.redundancy || {}), mode: sel.value };
-                }
-                notice(`${id}: mode ${sel.value} saved`);
-                drawInstances();
-            } catch (e) {
-                notice(`${id}: ${e.message}`, true);
+            const mode = document.querySelector(`select[data-id="${CSS.escape(id)}"]`).value;
+            const row = rows.find(r => r.id === id);
+            const warnings = mode === 'hot' && row ? L.hotCheck(row) : [];
+            if (!warnings.length) {
+                await saveMode(id, mode);
+                return;
             }
+            hotFor = id;
+            $('hottitle').textContent = `Run ${id} hot?`;
+            $('hotwarnings').innerHTML = warnings.map(w => `<li class="${w.level === 'bad' ? 'badc' : 'meh'}">${esc(w.text)}</li>`).join('');
+            $('hotdialog').showModal();
+        } else if (b.id === 'hotgo' && hotFor) {
+            $('hotdialog').close();
+            await saveMode(hotFor, 'hot');
+            hotFor = null;
+        } else if (b.id === 'hotcold' && hotFor) {
+            $('hotdialog').close();
+            await saveMode(hotFor, 'cold');
+            hotFor = null;
+        } else if (b.id === 'hotcancel') {
+            $('hotdialog').close();
+            hotFor = null;
+            drawInstances();
+        } else if (b.dataset.cold) {
+            await saveMode(b.dataset.cold, 'cold');
         }
     });
 
