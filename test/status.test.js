@@ -84,3 +84,12 @@ test('a settings message from the tab: an object of settings, and whether it is 
     assert.strictEqual(parseSettingsMessage(null), null);
     assert.strictEqual(parseSettingsMessage({ settings: { x: 'y'.repeat(4000) } }), null, 'longer than a watchdog request line');
 });
+
+test('settings are taken from an admin instance only, and "by" is who sent them', () => {
+    const { settingsSender } = require('../lib/status');
+    assert.strictEqual(settingsSender({ from: 'system.adapter.admin.0', message: { by: 'admin tab' } }), 'admin.0 (admin tab)');
+    assert.strictEqual(settingsSender({ from: 'system.adapter.admin.1', message: {} }), 'admin.1');
+    assert.strictEqual(settingsSender({ from: 'system.adapter.javascript.0', message: { by: 'admin tab' } }), null, 'a script is not the admin');
+    assert.strictEqual(settingsSender({ from: 'system.host.A.cli', message: {} }), null);
+    assert.strictEqual(settingsSender({ from: 'system.adapter.admin.0', message: { by: 'x\n\u001b[31mfake' } }), 'admin.0 (x [31mfake)', 'no control characters in the log');
+});

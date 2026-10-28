@@ -8,7 +8,7 @@ const path = require('node:path');
 const utils = require('@iobroker/adapter-core');
 
 const bridge = require('./lib/nativeBridge');
-const { statusToStates, installCommand, STALE_MS, parseSwitchCommand, parseSettingsMessage } = require('./lib/status');
+const { statusToStates, installCommand, STALE_MS, parseSwitchCommand, parseSettingsMessage, settingsSender } = require('./lib/status');
 const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
 const { installedAdapters } = require('./lib/installed');
@@ -240,7 +240,12 @@ class Redundancy extends utils.Adapter {
             answer({ error: 'set the watchdog API token in the settings of this instance first' });
             return;
         }
-        const by = String((obj.message && obj.message.by) || obj.from || '').slice(0, 100);
+        const by = settingsSender(obj);
+        if (!by) {
+            this.log.warn(`settings from ${obj.from} refused: only the admin tab may change them`);
+            answer({ error: 'only an admin instance may change the watchdog settings' });
+            return;
+        }
         try {
             const reply = await request(this.apiWhere, { op: 'settings', ...msg, by, token: this.config.apiToken });
             if (reply.type === 'error') {
