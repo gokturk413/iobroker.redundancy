@@ -227,10 +227,16 @@ class Redundancy extends utils.Adapter {
      * written and taken over). The tab sends it to every server under a maintenance lock.
      */
     async onMessage(obj) {
+        const answer = result => obj && obj.callback && this.sendTo(obj.from, obj.command, result, obj.callback);
+        if (obj && obj.command === 'installed') {
+            // after a sync the tab wants this host's adapters now, not in up to 10 minutes
+            await this.writeInstalled();
+            answer({ ok: true, installed: this.installed() });
+            return;
+        }
         if (!obj || obj.command !== 'settings') {
             return;
         }
-        const answer = result => obj.callback && this.sendTo(obj.from, obj.command, result, obj.callback);
         const msg = parseSettingsMessage(obj.message);
         if (!msg) {
             answer({ error: 'settings: an object of settings is needed' });

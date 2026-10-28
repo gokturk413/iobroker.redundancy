@@ -276,3 +276,24 @@ test('client options per host: ok, or what was found', () => {
     assert.deepStrictEqual(keep.values, { A: 'ok', B: 'missing in states' });
     assert.ok(v.clientOptions.find(r => r.option === 'retry_max_delay').values.B === 'ok');
 });
+
+test('sync: what the target server installs to match the source', () => {
+    const [a, b] = pair();
+    assert.deepStrictEqual(L.syncPlan(a, b), {
+        steps: [
+            { adapter: 'mqtt', have: '', want: '7.0.0', cmd: 'iobroker install mqtt@7.0.0' },
+            { adapter: 'rockwell-enip', have: '0.2.0', want: '0.2.1', cmd: 'iobroker upgrade rockwell-enip@0.2.1 -y' },
+        ],
+        extra: [],
+        refused: [],
+    });
+    assert.deepStrictEqual(L.syncPlan(b, a).extra, ['mqtt'], 'only on the target: left alone, named');
+});
+
+test('sync: a name or version that is not plain is never put into a command', () => {
+    const src = { name: 'A', installed: { 'good-one': '1.2.3', 'x;rm -rf /': '1.0.0', web: '1.0.0 && reboot', hm: '2.0.0-beta.1' } };
+    const dst = { name: 'B', installed: {} };
+    const p = L.syncPlan(src, dst);
+    assert.deepStrictEqual(p.steps.map(s => s.cmd), ['iobroker install good-one@1.2.3', 'iobroker install hm@2.0.0-beta.1']);
+    assert.deepStrictEqual(p.refused.sort(), ['web', 'x;rm -rf /']);
+});

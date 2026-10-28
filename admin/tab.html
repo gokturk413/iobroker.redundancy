@@ -79,7 +79,7 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     <nav aria-label="Redundancy sections">
         <a href="#servers" data-view="servers">Servers</a>
         <a href="#instances" data-view="instances">Instances</a>
-        <a href="#events" data-view="events">Events</a>
+        <a href="#events" data-view="events">Events &amp; sync</a>
         <a href="#settings" data-view="settings">Settings</a>
     </nav>
     <div id="notice" class="msg" hidden></div>
@@ -111,7 +111,20 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         </div>
     </section>
 
-    <section id="view-events" aria-label="Events" hidden>
+    <section id="view-events" aria-label="Events and sync" hidden>
+        <div class="card" style="margin-bottom: 16px">
+            <div class="controls">
+                <div class="what"><b id="synctitle">Sync</b><span class="dim">Objects, states and files are replicated by Redis all the time. This brings what Redis does not hold: the adapters, in the same versions (npm install on the other server, as the admin's own install does).</span></div>
+                <label class="check"><input type="checkbox" id="syncdry" checked> Dry run only</label>
+                <button type="button" id="syncgo" class="primary">Sync</button>
+            </div>
+            <div class="grid" style="margin-top: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr))">
+                <label>From <select id="syncfrom" style="width: 100%"></select></label>
+                <label>To <select id="syncto" style="width: 100%"></select></label>
+            </div>
+            <div style="margin-top: 12px"><b>Differences now</b><div id="syncdiff" class="dim" style="margin-top: 6px"></div></div>
+            <pre id="syncout" hidden style="margin: 12px 0 0; max-height: 280px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap"></pre>
+        </div>
         <div class="card"><div class="scroll"><table><thead><tr><th>Time</th><th>Host</th><th>Event</th><th>Detail</th></tr></thead><tbody id="events"></tbody></table></div></div>
     </section>
 
@@ -294,6 +307,7 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
 
         $('settings').innerHTML = list.map(x => `<li><a target="_top" href="/#tab-instances/config/system.adapter.${esc(x.instance)}">${esc(x.instance)}</a> on ${esc(x.iobHost)} (${esc(x.name)})</li>`).join('');
         drawSettings(list);
+        drawSync(list);
     }
 
     /** One value, or each server's value when they differ. */
@@ -517,6 +531,105 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         notice(`Settings changed on ${done.join(' and ')}: ${JSON.stringify(patch)}${wasLocked ? ' (your maintenance lock stays on)' : ''}`);
     }
 
+    let syncing = false;
+
+    /** The Sync card: from (default the primary) and to, the steps between them now. */
+    function drawSync(list) {
+        const from = $('syncfrom');
+        const to = $('syncto');
+        const names = list.map(x => x.name);
+        const keep = (sel, want) => {
+            const old = sel.value;
+            if (sel.options.length !== names.length || [...sel.options].some((o, i) => o.value !== names[i])) {
+                sel.innerHTML = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+            }
+            sel.value = names.includes(old) ? old : want;
+        };
+        const primary = (list.find(x => x.connected && x.role === 'primary') || list[0] || {}).name;
+        keep(from, primary);
+        keep(to, (list.find(x => x.name !== from.value) || {}).name);
+        const src = list.find(x => x.name === from.value);
+        const dst = list.find(x => x.name === to.value);
+        $('synctitle').textContent = src && dst ? `Sync ${src.name} → ${dst.name}` : 'Sync';
+        if (!src || !dst || src === dst) {
+            $('syncdiff').textContent = 'Choose two different servers.';
+            $('syncgo').disabled = true;
+            return null;
+        }
+        if (!Object.keys(src.installed).length || !Object.keys(dst.installed).length) {
+            $('syncdiff').textContent = 'The adapters of both servers are not reported yet.';
+            $('syncgo').disabled = true;
+            return null;
+        }
+        const p = L.syncPlan(src, dst);
+        const lines = p.steps.map(s => `<li><span style="font-family: var(--mono)">iobroker.${esc(s.adapter)}</span> · ${esc(s.want)} on ${esc(src.name)} · ${s.have ? `${esc(s.have)} on ${esc(dst.name)}` : `<span class="badc">not on ${esc(dst.name)}</span>`}</li>`);
+        if (p.refused.length) {
+            lines.push(`<li class="badc">not synced (name or version not plain): ${esc(p.refused.join(', '))}</li>`);
+        }
+        if (p.extra.length) {
+            lines.push(`<li>only on ${esc(dst.name)}, left alone: ${esc(p.extra.join(', '))}</li>`);
+        }
+        $('syncdiff').innerHTML = p.steps.length || lines.length
+            ? `<ul style="margin: 0; padding-left: 18px">${lines.join('')}</ul>`
+            : `<span class="good">${esc(dst.name)} has every adapter of ${esc(src.name)} in its version</span>`;
+        $('syncgo').disabled = syncing || !p.steps.length || !dst.connected;
+        $('syncgo').textContent = $('syncdry').checked ? `Show what ${dst.name} would run` : `Sync to ${dst.name}`;
+        return { src, dst, plan: p };
+    }
+
+    function syncLog(text) {
+        const o = $('syncout');
+        o.hidden = false;
+        o.textContent += text.endsWith('\n') ? text : `${text}\n`;
+        o.scrollTop = o.scrollHeight;
+    }
+
+    /** One command on a host (the admin's cmdExec): resolves with its exit code. */
+    const cmdWaits = new Map();
+    socket.on('cmdStdout', (id, text) => cmdWaits.has(id) && syncLog(String(text)));
+    socket.on('cmdStderr', (id, text) => cmdWaits.has(id) && syncLog(String(text)));
+    socket.on('cmdExit', (id, code) => {
+        const done = cmdWaits.get(id);
+        if (done) { cmdWaits.delete(id); done(Number(code)); }
+    });
+    const runOnHost = (iobHost, cmd) => new Promise(resolve => {
+        const id = Math.floor(Math.random() * 1e9);
+        const timer = setTimeout(() => { cmdWaits.delete(id); resolve(-1); }, 15 * 60_000);
+        cmdWaits.set(id, code => { clearTimeout(timer); resolve(code); });
+        socket.emit('sendToHost', `system.host.${iobHost}`, 'cmdExec', { data: cmd, id });
+    });
+
+    async function syncRun() {
+        const s = drawSync(L.servers(instances, states));
+        if (!s) { return; }
+        $('syncout').textContent = '';
+        if ($('syncdry').checked) {
+            syncLog(`Dry run: ${s.dst.name} (${s.dst.iobHost}) would run`);
+            s.plan.steps.forEach(x => syncLog(`  ${x.cmd}`));
+            return;
+        }
+        syncing = true;
+        $('syncgo').disabled = true;
+        const failed = [];
+        try {
+            if (s.dst.role === 'primary') {
+                syncLog(`Note: ${s.dst.name} is the primary; an upgrade restarts the instances of that adapter there.`);
+            }
+            for (const x of s.plan.steps) {
+                syncLog(`\n$ ${x.cmd}   (on ${s.dst.iobHost})`);
+                const code = await runOnHost(s.dst.iobHost, x.cmd);
+                syncLog(code === 0 ? `done: ${x.adapter} ${x.want}` : `FAILED (${code === -1 ? 'no answer in 15 min' : `exit ${code}`}): ${x.adapter}`);
+                if (code !== 0) { failed.push(x.adapter); }
+            }
+            await sendTo(s.dst.instance, 'installed', {});
+            Object.assign(states, (await call('getStates', 'redundancy.*')) || {});
+        } finally {
+            syncing = false;
+            draw();
+        }
+        notice(failed.length ? `Sync to ${s.dst.name}: failed for ${failed.join(', ')} (see the output)` : `Sync to ${s.dst.name} done`, failed.length > 0);
+    }
+
     async function command(id, val) {
         await call('setState', id, { val, ack: false });
     }
@@ -576,6 +689,13 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             $('hotdialog').close();
             await saveMode(hotFor, 'cold');
             hotFor = null;
+        } else if (b.id === 'syncgo') {
+            try {
+                await syncRun();
+            } catch (e) {
+                syncLog(e.message);
+                notice(`sync: ${e.message}`, true);
+            }
         } else if (b.id === 'setedit') {
             openSettings();
         } else if (b.id === 'setcancel') {
@@ -600,6 +720,9 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     });
 
     document.addEventListener('change', ev => {
+        if (['syncfrom', 'syncto', 'syncdry'].includes(ev.target.id)) {
+            drawSync(L.servers(instances, states));
+        }
         const sel = ev.target.closest('select[data-id]');
         if (sel) {
             const btn = document.querySelector(`button[data-save="${CSS.escape(sel.dataset.id)}"]`);

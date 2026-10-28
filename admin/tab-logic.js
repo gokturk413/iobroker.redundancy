@@ -452,5 +452,32 @@
         return { patch, errors };
     }
 
-    return { settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES };
+    /** An npm package name of an adapter and a version, nothing a shell would read. */
+    const PLAIN_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+    const PLAIN_VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
+    /**
+     * Sync: the commands the target host runs (cmdExec, as the admin's adapter installs do)
+     * so that it has every adapter of the source in the source's version. Adapters only on the
+     * target are left alone; a name or version that is not plain is refused, never run.
+     */
+    function syncPlan(source, target) {
+        const steps = [];
+        const refused = [];
+        for (const [a, v] of Object.entries(source.installed).sort(([x], [y]) => x.localeCompare(y))) {
+            const have = target.installed[a] || '';
+            if (have === v) {
+                continue;
+            }
+            if (!PLAIN_NAME.test(a) || !PLAIN_VERSION.test(String(v))) {
+                refused.push(a);
+                continue;
+            }
+            steps.push({ adapter: a, have, want: v, cmd: have ? `iobroker upgrade ${a}@${v} -y` : `iobroker install ${a}@${v}` });
+        }
+        const extra = Object.keys(target.installed).filter(a => !(a in source.installed)).sort();
+        return { steps, extra, refused };
+    }
+
+    return { syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES };
 });
