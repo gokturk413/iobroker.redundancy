@@ -116,7 +116,10 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     </section>
 
     <section id="view-settings" aria-label="Settings" hidden>
-        <p class="dim" style="margin: 0 0 12px">What the watchdog of each server runs with (its <code>watchdog.json</code>). A value that differs between the servers is marked. To change one: edit <code>watchdog.json</code> on each server the same way, then restart its watchdog.</p>
+        <div class="controls" style="margin: 0 0 12px">
+            <p class="dim what" style="margin: 0">What the watchdog of each server runs with (its <code>watchdog.json</code>). A value that differs between the servers is marked. The timing, the heartbeat and each link's limit change here, on every server at once and without a restart; keys, hosts and addresses only in <code>watchdog.json</code> on each server.</p>
+            <button type="button" id="setedit" class="primary">Change settings…</button>
+        </div>
         <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(420px, 1fr))">
             <div class="card">
                 <b>Servers</b>
@@ -184,6 +187,20 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         <button type="button" id="hotcancel">Cancel</button>
         <button type="button" id="hotgo">Use hot anyway</button>
         <button type="button" id="hotcold" class="primary">Make it cold</button>
+    </footer>
+</dialog>
+
+<dialog id="setdialog" aria-labelledby="settitle">
+    <header><h1 id="settitle" style="font-size: 18px">Change the watchdog settings</h1><span class="dim">The same values on every server. Applied without a restart, under a maintenance lock, so that no automatic switch runs while the servers differ for a moment.</span></header>
+    <div class="body">
+        <dl id="setform"></dl>
+        <div id="setlinks"></div>
+        <div id="setmsg" class="msg" hidden></div>
+    </div>
+    <footer>
+        <button type="button" id="setcancel">Cancel</button>
+        <button type="button" id="setcheck">Check on every server</button>
+        <button type="button" id="setgo" class="primary">Apply to every server</button>
     </footer>
 </dialog>
 
@@ -407,6 +424,99 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     window.addEventListener('hashchange', show);
     show();
 
+    const FIELDS = [
+        ['fenceAfterMs', 'Fence after (ms)', 'the primary stops taking writes when it is cut off this long'],
+        ['takeoverAfterMs', 'Take over after (ms)', 'the standby takes over; at least 50 ms after the fence'],
+        ['leaseTtlMs', 'Lease TTL (ms)', 'the primary renews it every third of this'],
+        ['beatMs', 'Heartbeat every (ms)', '10 to 1000'],
+        ['redisHangMs', 'A busy Redis counts as down after (ms)', 'a refused connection counts at once'],
+    ];
+    let setView = null;
+
+    function openSettings() {
+        setView = L.settingsView(L.servers(instances, states));
+        const f = L.settingsForm(setView);
+        const input = (id, value, extra) => `<input id="${id}" type="number" step="1" value="${esc(value)}" ${extra || ''} style="width: 100%; min-height: 36px; border-radius: 6px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font: inherit; padding: 0 8px">`;
+        $('setform').innerHTML = FIELDS.map(([k, label, hint]) => `<div><dt><label for="set-${k}">${esc(label)}</label></dt>
+            <dd>${input(`set-${k}`, f[k])}<span class="dim">${esc(hint)}</span></dd></div>`).join('')
+            + `<div><dt>Witness</dt><dd><label class="check"><input type="checkbox" id="set-witnessRequired"${f.witnessRequired ? ' checked' : ''}> needed for an automatic failover</label></dd></div>`;
+        $('setlinks').innerHTML = setView.links.length ? `<b>Heartbeat links: lost after (beats)</b><dl style="margin-top: 8px">${setView.links.map(l => `<div><dt><label for="set-link-${esc(l.name)}">${esc(l.name)} (${esc(l.medium)})</label></dt>
+            <dd>${input(`set-link-${esc(l.name)}`, f.missed[l.name] == null ? '' : f.missed[l.name], `data-link="${esc(l.name)}" min="1" max="100" placeholder="default ${l.medium === 'wlan' ? 10 : 3}"`)}</dd></div>`).join('')}</dl>` : '';
+        setMsg('');
+        $('setdialog').showModal();
+    }
+
+    function readForm() {
+        const n = id => { const v = $(id).value.trim(); return v === '' ? NaN : Number(v); };
+        const form = { witnessRequired: $('set-witnessRequired').checked, missed: {} };
+        for (const [k] of FIELDS) { form[k] = n(`set-${k}`); }
+        for (const i of document.querySelectorAll('#setlinks input[data-link]')) {
+            form.missed[i.dataset.link] = i.value.trim() === '' ? null : Number(i.value);
+        }
+        return form;
+    }
+
+    function setMsg(text, bad) {
+        $('setmsg').hidden = !text;
+        $('setmsg').textContent = text || '';
+        $('setmsg').className = bad ? 'msg bad' : 'msg';
+    }
+
+    /** sendTo a redundancy instance: it answers {ok, config} or {error}. */
+    const sendTo = (instance, cmd, message, ms = 15000) => new Promise(resolve => {
+        const t = setTimeout(() => resolve({ error: `${instance} did not answer` }), ms);
+        socket.emit('sendTo', instance, cmd, message, res => { clearTimeout(t); resolve(res || { error: 'no answer' }); });
+    });
+
+    const lockedNow = () => L.summary(L.servers(instances, states), Date.now()).maintenanceUntil;
+
+    /** Checks the settings on every server; with apply, writes them on every server under the lock. */
+    async function settingsRun(apply) {
+        const { patch, errors } = L.settingsPatch(setView, readForm());
+        if (errors.length) { setMsg(errors.join(' · '), true); return; }
+        if (!Object.keys(patch).length) { setMsg('Nothing changed.'); return; }
+        const list = L.servers(instances, states);
+        const off = list.filter(x => !x.connected);
+        if (off.length) { setMsg(`${off.map(x => x.name).join(', ')}: watchdog not running. The settings must change on every server at once.`, true); return; }
+        const by = 'admin tab';
+        for (const x of list) {
+            setMsg(`Checking on ${x.name}…`);
+            const r = await sendTo(x.instance, 'settings', { settings: patch, dryRun: true, by });
+            if (r.error) { setMsg(`${x.name} refuses: ${r.error}`, true); return; }
+        }
+        if (!apply) { setMsg(`Every server accepts: ${JSON.stringify(patch)}`); return; }
+        const sum = L.summary(list, Date.now());
+        const via = (sum.primary || list[0]).instance;
+        const wasLocked = Boolean(sum.maintenanceUntil);
+        if (!wasLocked) {
+            setMsg('Maintenance lock for 10 min…');
+            await command(`${via}.control.maintenance`, 10);
+            const until = Date.now() + 5000;
+            while (!lockedNow() && Date.now() < until) {
+                await new Promise(r => setTimeout(r, 250));
+            }
+            if (!lockedNow()) {
+                setMsg('The maintenance lock did not come up: nothing was changed.', true);
+                return;
+            }
+        }
+        const done = [];
+        for (const x of list) {
+            setMsg(`Applying on ${x.name}…`);
+            const r = await sendTo(x.instance, 'settings', { settings: patch, dryRun: false, by });
+            if (r.error) {
+                setMsg(`${x.name} refused: ${r.error}. Changed on: ${done.join(', ') || 'none'}. The maintenance lock stays on until the servers agree again.`, true);
+                return;
+            }
+            done.push(x.name);
+        }
+        if (!wasLocked) {
+            await command(`${via}.control.maintenance`, 0);
+        }
+        $('setdialog').close();
+        notice(`Settings changed on ${done.join(' and ')}: ${JSON.stringify(patch)}${wasLocked ? ' (your maintenance lock stays on)' : ''}`);
+    }
+
     async function command(id, val) {
         await call('setState', id, { val, ack: false });
     }
@@ -466,6 +576,20 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             $('hotdialog').close();
             await saveMode(hotFor, 'cold');
             hotFor = null;
+        } else if (b.id === 'setedit') {
+            openSettings();
+        } else if (b.id === 'setcancel') {
+            $('setdialog').close();
+        } else if (b.id === 'setcheck' || b.id === 'setgo') {
+            const buttons = ['setcheck', 'setgo', 'setcancel'].map($);
+            buttons.forEach(x => { x.disabled = true; });
+            try {
+                await settingsRun(b.id === 'setgo');
+            } catch (e) {
+                setMsg(e.message, true);
+            } finally {
+                buttons.forEach(x => { x.disabled = false; });
+            }
         } else if (b.id === 'hotcancel') {
             $('hotdialog').close();
             hotFor = null;

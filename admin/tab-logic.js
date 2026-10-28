@@ -338,12 +338,14 @@
         const links = names.map(name => {
             const sides = {};
             const now = {};
+            const missedBy = {};
             let medium = '';
             let missed = null;
             for (const s of withCfg) {
                 const l = (s.config.links || []).find(x => x.name === name);
                 if (l) {
                     sides[s.name] = l.bind;
+                    missedBy[s.name] = l.missed == null ? null : l.missed;
                     medium = medium || l.medium;
                     missed = missed == null ? l.missed : missed;
                 }
@@ -352,7 +354,7 @@
                 const live = s.links.find(x => x.name === name);
                 now[s.name] = live ? (live.lost ? 'lost' : 'ok') : '—';
             }
-            return { name, medium, sides, lostAfter: missed == null ? (medium === 'wlan' ? 10 : 3) : missed, now };
+            return { name, medium, sides, lostAfter: missed == null ? (medium === 'wlan' ? 10 : 3) : missed, missed: missedBy, now };
         });
         const clientOptions = CLIENT_OPTIONS.map(([option, needed]) => {
             const values = {};
@@ -366,5 +368,89 @@
         return { servers, cluster, timing, links, clientOptions };
     }
 
-    return { servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES };
+    const firstOf = values => Object.values(values || {})[0];
+    const rowOf = (rows, key) => rows.find(r => r.key === key) || { values: {}, same: true };
+
+    /** The settings the admin may change (the watchdog's tuning), filled from the servers. */
+    function settingsForm(v) {
+        const num = key => firstOf(rowOf(v.timing, key).values);
+        return {
+            fenceAfterMs: num('fenceAfterMs'),
+            takeoverAfterMs: num('takeoverAfterMs'),
+            leaseTtlMs: num('leaseTtlMs'),
+            beatMs: num('beatMs'),
+            redisHangMs: num('redisHangMs'),
+            witnessRequired: firstOf(rowOf(v.cluster, 'witnessRequired').values) === true,
+            missed: Object.fromEntries(v.links.map(l => [l.name, firstOf(l.missed) == null ? null : firstOf(l.missed)])),
+        };
+    }
+
+    const LIMITS = [
+        ['fenceAfterMs', 'Fence after (ms)', 1, 600000],
+        ['takeoverAfterMs', 'Take over after (ms)', 1, 600000],
+        ['leaseTtlMs', 'Lease TTL (ms)', 1, 600000],
+        ['beatMs', 'Heartbeat every (ms)', 10, 1000],
+        ['redisHangMs', 'A busy Redis counts as down after (ms)', 1, 60000],
+    ];
+
+    /**
+     * The form as the watchdog's `settings` request: only what differs from the servers (or
+     * what the servers disagree on). With errors, nothing is sent.
+     */
+    function settingsPatch(v, form) {
+        const errors = [];
+        const whole = (n, label, lo, hi) => {
+            if (!Number.isInteger(n)) {
+                errors.push(`${label}: a whole number`);
+            } else if (n < lo || n > hi) {
+                errors.push(`${label}: ${lo} to ${hi}`);
+            }
+        };
+        for (const [key, label, lo, hi] of LIMITS) {
+            whole(form[key], label, lo, hi);
+        }
+        if (Number.isInteger(form.fenceAfterMs) && Number.isInteger(form.takeoverAfterMs) && form.takeoverAfterMs < form.fenceAfterMs + 50) {
+            errors.push('Take over after must be at least 50 ms later than fence after, or two primaries can run at once');
+        }
+        for (const [name, n] of Object.entries(form.missed || {})) {
+            if (n != null) {
+                whole(n, `Link ${name}: lost after (beats)`, 1, 100);
+            }
+        }
+        if (errors.length) {
+            return { patch: {}, errors };
+        }
+        const changed = (row, value) => !row.same || firstOf(row.values) !== value;
+        const patch = {};
+        const timing = {};
+        for (const key of ['fenceAfterMs', 'takeoverAfterMs', 'leaseTtlMs']) {
+            if (changed(rowOf(v.timing, key), form[key])) {
+                timing[key] = form[key];
+            }
+        }
+        if (Object.keys(timing).length) {
+            patch.timing = timing;
+        }
+        for (const key of ['beatMs', 'redisHangMs']) {
+            if (changed(rowOf(v.timing, key), form[key])) {
+                patch[key] = form[key];
+            }
+        }
+        if (changed(rowOf(v.cluster, 'witnessRequired'), form.witnessRequired)) {
+            patch.witnessRequired = form.witnessRequired;
+        }
+        const links = v.links
+            .filter(l => {
+                const all = Object.values(l.missed).map(x => (x == null ? null : x));
+                const want = form.missed[l.name] == null ? null : form.missed[l.name];
+                return all.some(x => x !== all[0]) || all[0] !== want;
+            })
+            .map(l => ({ name: l.name, missed: form.missed[l.name] == null ? null : form.missed[l.name] }));
+        if (links.length) {
+            patch.links = links;
+        }
+        return { patch, errors };
+    }
+
+    return { settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES };
 });

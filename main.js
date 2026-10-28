@@ -8,7 +8,7 @@ const path = require('node:path');
 const utils = require('@iobroker/adapter-core');
 
 const bridge = require('./lib/nativeBridge');
-const { statusToStates, installCommand, STALE_MS, parseSwitchCommand } = require('./lib/status');
+const { statusToStates, installCommand, STALE_MS, parseSwitchCommand, parseSettingsMessage } = require('./lib/status');
 const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
 const { installedAdapters } = require('./lib/installed');
@@ -48,6 +48,7 @@ class Redundancy extends utils.Adapter {
         this.on('ready', () => this.onReady());
         this.on('stateChange', (id, state) => this.onStateChange(id, state));
         this.on('unload', cb => this.onUnload(cb));
+        this.on('message', obj => this.onMessage(obj));
     }
 
     async onReady() {
@@ -219,6 +220,41 @@ class Redundancy extends utils.Adapter {
         }
         // the command is done (or refused): the command state shows its value acknowledged
         await this.setStateAsync(id, what === 'switchover' ? '' : req.minutes, true);
+    }
+
+    /**
+     * sendTo('settings') from the admin tab: new tuning for this host's watchdog (checked, or
+     * written and taken over). The tab sends it to every server under a maintenance lock.
+     */
+    async onMessage(obj) {
+        if (!obj || obj.command !== 'settings') {
+            return;
+        }
+        const answer = result => obj.callback && this.sendTo(obj.from, obj.command, result, obj.callback);
+        const msg = parseSettingsMessage(obj.message);
+        if (!msg) {
+            answer({ error: 'settings: an object of settings is needed' });
+            return;
+        }
+        if (!this.config.apiToken) {
+            answer({ error: 'set the watchdog API token in the settings of this instance first' });
+            return;
+        }
+        const by = String((obj.message && obj.message.by) || obj.from || '').slice(0, 100);
+        try {
+            const reply = await request(this.apiWhere, { op: 'settings', ...msg, by, token: this.config.apiToken });
+            if (reply.type === 'error') {
+                answer({ error: reply.error });
+                return;
+            }
+            if (!msg.dryRun) {
+                this.log.info(`watchdog settings changed by ${by}: ${JSON.stringify(msg.settings)}`);
+                await this.refreshConfig();
+            }
+            answer({ ok: true, config: reply.config });
+        } catch (e) {
+            answer({ error: e.message });
+        }
     }
 
     async checkClientOptions(addon) {

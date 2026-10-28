@@ -74,3 +74,13 @@ test('the links state changes only when a link is lost or back, not with every b
     assert.deepStrictEqual(JSON.parse(at(400, true).links), [{ name: 'lan', lost: true }, { name: 'p2p', lost: false }]);
     assert.strictEqual(statusToStates(fresh, fresh.t).links, '[]');
 });
+
+test('a settings message from the tab: an object of settings, and whether it is a dry run', () => {
+    const { parseSettingsMessage } = require('../lib/status');
+    assert.deepStrictEqual(parseSettingsMessage({ settings: { beatMs: 40 }, dryRun: true }), { settings: { beatMs: 40 }, dryRun: true });
+    assert.deepStrictEqual(parseSettingsMessage({ settings: { beatMs: 40 } }), { settings: { beatMs: 40 }, dryRun: false });
+    assert.strictEqual(parseSettingsMessage({ settings: [] }), null);
+    assert.strictEqual(parseSettingsMessage({ settings: 'x' }), null);
+    assert.strictEqual(parseSettingsMessage(null), null);
+    assert.strictEqual(parseSettingsMessage({ settings: { x: 'y'.repeat(4000) } }), null, 'longer than a watchdog request line');
+});

@@ -59,6 +59,7 @@
         "admin": ">=7.0.0"
       }
     ],
+    "messagebox": true,
     "adminTab": {
       "singleton": true,
       "name": {

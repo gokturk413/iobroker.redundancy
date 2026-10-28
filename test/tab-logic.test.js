@@ -230,9 +230,44 @@ test('links are paired by name, with each side, the medium default and each host
         medium: 'wlan',
         sides: { A: '172.20.0.11:7001', B: '172.20.0.12:7001' },
         lostAfter: 10,
+        missed: { A: null, B: null },
         now: { A: 'ok', B: 'lost' },
     });
     assert.strictEqual(v.links[0].lostAfter, 3);
+});
+
+test('the settings form starts from the servers values; only what changed is sent', () => {
+    const v = L.settingsView(withConfigs());
+    const form = L.settingsForm(v);
+    assert.deepStrictEqual(form, {
+        fenceAfterMs: 150, takeoverAfterMs: 250, leaseTtlMs: 5000, beatMs: 50, redisHangMs: 3000,
+        witnessRequired: true, missed: { nat: null, wifi: null },
+    });
+    assert.deepStrictEqual(L.settingsPatch(v, form), { patch: {}, errors: [] });
+    assert.deepStrictEqual(L.settingsPatch(v, { ...form, takeoverAfterMs: 400, missed: { nat: 5, wifi: null } }), {
+        patch: { timing: { takeoverAfterMs: 400 }, links: [{ name: 'nat', missed: 5 }] },
+        errors: [],
+    });
+    assert.deepStrictEqual(L.settingsPatch(v, { ...form, witnessRequired: false, beatMs: 40 }).patch, { beatMs: 40, witnessRequired: false });
+});
+
+test('settings that cannot work are refused in the tab already', () => {
+    const v = L.settingsView(withConfigs());
+    const form = L.settingsForm(v);
+    const err = f => L.settingsPatch(v, { ...form, ...f }).errors.join(' ');
+    assert.match(err({ takeoverAfterMs: 180 }), /take over/i);
+    assert.match(err({ beatMs: 5 }), /heartbeat/i);
+    assert.match(err({ redisHangMs: 0 }), /busy Redis/i);
+    assert.match(err({ fenceAfterMs: 1.5 }), /whole number/i);
+    assert.match(err({ missed: { nat: 0, wifi: null } }), /nat/);
+    assert.strictEqual(L.settingsPatch(v, { ...form, takeoverAfterMs: 180 }).patch.timing, undefined, 'nothing is sent with an error');
+});
+
+test('a value the servers disagree on is sent, so that they agree again', () => {
+    const v = L.settingsView(withConfigs({ timing: { fenceAfterMs: 150, takeoverAfterMs: 400, leaseTtlMs: 5000 } }));
+    const form = L.settingsForm(v);
+    assert.strictEqual(form.takeoverAfterMs, 250, 'the first server');
+    assert.deepStrictEqual(L.settingsPatch(v, form).patch, { timing: { takeoverAfterMs: 250 } });
 });
 
 test('client options per host: ok, or what was found', () => {
