@@ -114,9 +114,17 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     <section id="view-events" aria-label="Events and sync" hidden>
         <div class="card" style="margin-bottom: 16px">
             <div class="controls">
-                <div class="what"><b id="synctitle">Sync</b><span class="dim">Objects, states and files are replicated by Redis all the time. This brings what Redis does not hold: the adapters, in the same versions (npm install on the other server, as the admin's own install does).</span></div>
-                <label class="check"><input type="checkbox" id="syncdry" checked> Dry run only</label>
+                <div class="what"><b id="synctitle">Sync</b><span class="dim">Objects, states and files are replicated by Redis all the time. This copies what Redis does not hold.</span></div>
                 <button type="button" id="syncgo" class="primary">Sync</button>
+            </div>
+            <div style="margin-top: 12px"><b>What to copy</b>
+                <label class="check"><input type="checkbox" id="syncadapters" checked> Adapters (the same versions on the other server: npm install there, as the admin's own install does)</label>
+                <label class="check"><input type="checkbox" id="syncfiles"> Local files (iobroker-data, listed paths)</label>
+                <div id="syncpathsbox" hidden style="margin: 0 0 8px 30px">
+                    <textarea id="syncpaths" rows="3" spellcheck="false" placeholder="one path under iobroker-data per line, e.g. history" style="font-family: var(--mono)"></textarea>
+                    <span class="dim">Never iobroker.json or the database files; at most 20 MB a file, 200 MB in all. Files the other server has newer or of the same size and time are left alone.</span>
+                </div>
+                <label class="check"><input type="checkbox" id="syncdry" checked> Dry run only</label>
             </div>
             <div class="grid" style="margin-top: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr))">
                 <label>From <select id="syncfrom" style="width: 100%"></select></label>
@@ -577,7 +585,13 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             $('syncgo').disabled = true;
             return null;
         }
-        const p = L.syncPlan(src, dst);
+        const box = $('syncpaths');
+        if (document.activeElement !== box && !box.dataset.edited) {
+            try { box.value = JSON.parse((states[`${src.instance}.syncPaths`] || {}).val || '[]').join('\n'); } catch { /* keep */ }
+        }
+        $('syncpathsbox').hidden = !$('syncfiles').checked;
+        const adapters = $('syncadapters').checked;
+        const p = adapters ? L.syncPlan(src, dst) : { steps: [], extra: [], refused: [] };
         const lines = p.steps.map(s => `<li><span style="font-family: var(--mono)">iobroker.${esc(s.adapter)}</span> · ${esc(s.want)} on ${esc(src.name)} · ${s.have ? `${esc(s.have)} on ${esc(dst.name)}` : `<span class="badc">not on ${esc(dst.name)}</span>`}</li>`);
         if (p.refused.length) {
             lines.push(`<li class="badc">not synced (name or version not plain): ${esc(p.refused.join(', '))}</li>`);
@@ -585,10 +599,12 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         if (p.extra.length) {
             lines.push(`<li>only on ${esc(dst.name)}, left alone: ${esc(p.extra.join(', '))}</li>`);
         }
-        $('syncdiff').innerHTML = p.steps.length || lines.length
-            ? `<ul style="margin: 0; padding-left: 18px">${lines.join('')}</ul>`
-            : `<span class="good">${esc(dst.name)} has every adapter of ${esc(src.name)} in its version</span>`;
-        $('syncgo').disabled = syncing || !p.steps.length || !dst.connected;
+        $('syncdiff').innerHTML = !adapters
+            ? '<span class="dim">adapters not chosen</span>'
+            : p.steps.length || lines.length
+                ? `<ul style="margin: 0; padding-left: 18px">${lines.join('')}</ul>`
+                : `<span class="good">${esc(dst.name)} has every adapter of ${esc(src.name)} in its version</span>`;
+        $('syncgo').disabled = syncing || !dst.connected || !(p.steps.length || $('syncfiles').checked);
         $('syncgo').textContent = $('syncdry').checked ? `Show what ${dst.name} would run` : `Sync to ${dst.name}`;
         return { src, dst, plan: p };
     }
@@ -615,19 +631,52 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         socket.emit('sendToHost', `system.host.${iobHost}`, 'cmdExec', { data: cmd, id });
     });
 
+    /** Local files: the source lists, the target compares; then the source sends what differs. */
+    async function syncFiles(s, dry) {
+        const paths = $('syncpaths').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+        if (!paths.length) { syncLog('Local files: no path listed'); return false; }
+        await call('setState', `${s.src.instance}.syncPaths`, { val: JSON.stringify(paths), ack: true });
+        delete $('syncpaths').dataset.edited;
+        const list = await sendTo(s.src.instance, 'syncList', { paths, by: 'admin tab' }, 120000);
+        if (list.error) { syncLog(`Local files on ${s.src.name}: ${list.error}`); return false; }
+        list.refused.forEach(r => syncLog(`  refused: ${r.path} (${r.why})`));
+        const cmp = await sendTo(s.dst.instance, 'syncCompare', { files: list.files, by: 'admin tab' }, 120000);
+        if (cmp.error) { syncLog(`Local files on ${s.dst.name}: ${cmp.error}`); return false; }
+        const kb = n => `${Math.ceil(n / 1024)} KB`;
+        syncLog(`Local files: ${list.files.length} on ${s.src.name} (${kb(list.total)}), ${cmp.diff.length} to copy`);
+        cmp.diff.forEach(d => syncLog(`  ${d.path} · ${kb(d.size)} · ${d.why}`));
+        if (dry || !cmp.diff.length) { return true; }
+        const id = `${Date.now()}`;
+        const sent = await sendTo(s.src.instance, 'syncSend', { paths, only: cmp.diff.map(d => d.path), id, by: 'admin tab' }, 10 * 60_000);
+        if (sent.error) { syncLog(`  sending: ${sent.error}`); return false; }
+        const got = await sendTo(s.dst.instance, 'syncReceive', { from: s.src.instance, id: sent.id, files: sent.files, by: 'admin tab' }, 10 * 60_000);
+        if (got.error) { syncLog(`  writing: ${got.error}`); return false; }
+        syncLog(`  written on ${s.dst.name}: ${got.written.length}${got.failed.length ? `, failed: ${got.failed.join('; ')}` : ''}`);
+        return got.failed.length === 0;
+    }
+
     async function syncRun() {
         const s = drawSync(L.servers(instances, states));
         if (!s) { return; }
         $('syncout').textContent = '';
-        if ($('syncdry').checked) {
-            syncLog(`Dry run: ${s.dst.name} (${s.dst.iobHost}) would run`);
-            s.plan.steps.forEach(x => syncLog(`  ${x.cmd}`));
+        const dry = $('syncdry').checked;
+        if (dry) {
+            if (s.plan.steps.length) {
+                syncLog(`Dry run: ${s.dst.name} (${s.dst.iobHost}) would run`);
+                s.plan.steps.forEach(x => syncLog(`  ${x.cmd}`));
+            }
+            if ($('syncfiles').checked) {
+                await syncFiles(s, true);
+            }
             return;
         }
         syncing = true;
         $('syncgo').disabled = true;
         const failed = [];
         try {
+            if ($('syncfiles').checked && !(await syncFiles(s, false))) {
+                failed.push('local files');
+            }
             if (s.dst.role === 'primary') {
                 syncLog(`Note: ${s.dst.name} is the primary; an upgrade restarts the instances of that adapter there.`);
             }
@@ -811,7 +860,10 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     });
 
     document.addEventListener('change', ev => {
-        if (['syncfrom', 'syncto', 'syncdry'].includes(ev.target.id)) {
+        if (ev.target.id === 'syncpaths') {
+            ev.target.dataset.edited = '1';
+        }
+        if (['syncfrom', 'syncto', 'syncdry', 'syncadapters', 'syncfiles'].includes(ev.target.id)) {
             drawSync(L.servers(instances, states));
         }
         const sel = ev.target.closest('select[data-id]');

@@ -403,6 +403,28 @@
         "def": "{}"
       },
       "native": {}
+    },
+    {
+      "_id": "sync",
+      "type": "meta",
+      "common": {
+        "name": "Files on their way to the other server (sync), removed when written there",
+        "type": "meta.user"
+      },
+      "native": {}
+    },
+    {
+      "_id": "syncPaths",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Paths under iobroker-data the Sync card copies (JSON list)",
+        "type": "string",
+        "read": true,
+        "write": true,
+        "def": "[]"
+      },
+      "native": {}
     }
   ],
   "encryptedNative": [

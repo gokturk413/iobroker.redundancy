@@ -12,6 +12,7 @@ const { statusToStates, installCommand, STALE_MS, parseSwitchCommand, parseSetti
 const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
 const { installedAdapters } = require('./lib/installed');
+const { checkPaths, listFiles, diff, writeFile } = require('./lib/syncfiles');
 
 /** How often the watchdog config is read again (it changes only when someone edits it). */
 const CONFIG_MS = 60_000;
@@ -234,6 +235,10 @@ class Redundancy extends utils.Adapter {
             answer({ ok: true, installed: this.installed() });
             return;
         }
+        if (obj && /^sync(List|Compare|Send|Receive)$/.test(obj.command)) {
+            await this.onSyncMessage(obj, answer);
+            return;
+        }
         if (obj && (obj.command === 'activation' || obj.command === 'licence')) {
             await this.onLicenceMessage(obj, answer);
             return;
@@ -267,6 +272,69 @@ class Redundancy extends utils.Adapter {
                 await this.refreshConfig();
             }
             answer({ ok: true, config: reply.config });
+        } catch (e) {
+            answer({ error: e.message });
+        }
+    }
+
+    /**
+     * Sync of local files (the admin tab's Sync card), from an admin instance only:
+     * syncList / syncCompare on either server for the dry run; syncSend on the source puts the
+     * files into its `sync` meta object (Redis), syncReceive on the target writes them under its
+     * iobroker-data and removes them there.
+     */
+    async onSyncMessage(obj, answer) {
+        const by = settingsSender(obj);
+        if (!by) {
+            this.log.warn(`${obj.command} from ${obj.from} refused: only the admin tab may sync`);
+            answer({ error: 'only an admin instance may sync' });
+            return;
+        }
+        const m = obj.message || {};
+        const root = utils.getAbsoluteDefaultDataDir();
+        try {
+            if (obj.command === 'syncList' || obj.command === 'syncSend') {
+                const { ok, refused } = checkPaths(Array.isArray(m.paths) ? m.paths : []);
+                const { files, total } = listFiles(root, ok);
+                if (obj.command === 'syncList') {
+                    answer({ ok: true, files, total, refused });
+                    return;
+                }
+                const only = Array.isArray(m.only) ? new Set(m.only) : null;
+                const id = String(m.id || Date.now()).replace(/[^0-9A-Za-z-]/g, '');
+                const sent = [];
+                for (const f of files.filter(x => !only || only.has(x.path))) {
+                    await this.writeFileAsync(`${this.namespace}.sync`, `${id}/${f.path}`, fs.readFileSync(path.join(root, f.path)));
+                    sent.push(f.path);
+                }
+                this.log.info(`sync: ${sent.length} files ready for the other server (${by})`);
+                answer({ ok: true, id, files: sent });
+            } else if (obj.command === 'syncCompare') {
+                const src = Array.isArray(m.files) ? m.files : [];
+                const { files } = listFiles(root, checkPaths([...new Set(src.map(f => String(f.path).split('/')[0]))]).ok);
+                answer({ ok: true, diff: diff(src, files) });
+            } else {
+                const from = String(m.from || '');
+                const id = String(m.id || '').replace(/[^0-9A-Za-z-]/g, '');
+                if (!/^redundancy\.\d+$/.test(from) || !id) {
+                    answer({ error: 'syncReceive: from and id are needed' });
+                    return;
+                }
+                const written = [];
+                const failed = [];
+                for (const p of Array.isArray(m.files) ? m.files : []) {
+                    try {
+                        const { file } = await this.readFileAsync(`${from}.sync`, `${id}/${p}`);
+                        writeFile(root, p, Buffer.isBuffer(file) ? file : Buffer.from(file));
+                        written.push(p);
+                    } catch (e) {
+                        failed.push(`${p}: ${e.message}`);
+                    }
+                    await this.delFileAsync(`${from}.sync`, `${id}/${p}`).catch(() => {});
+                }
+                this.log.info(`sync: ${written.length} files written from ${from}${failed.length ? `, ${failed.length} failed` : ''} (${by})`);
+                answer({ ok: failed.length === 0, written, failed });
+            }
         } catch (e) {
             answer({ error: e.message });
         }
