@@ -565,11 +565,14 @@
                     return `${m[1]}:${m[2]}`;
                 }
             }
-            const host = ['ip', 'host', 'bind', 'address', 'plcIp', 'plcAddress', 'server'].map(k => o[k]).find(v => typeof v === 'string' && /^[A-Za-z0-9.-]+$/.test(v.trim()) && v.trim() !== '0.0.0.0');
-            if (host) {
-                const port = Number(o.port) || PORTS[adapter] || 0;
+            // ip, host, bind, plcHost, tcpHost, deviceAddress …; its port from port / <prefix>Port
+            const usable = v => typeof v === 'string' && /^[A-Za-z0-9.-]+$/.test(v.trim()) && v.trim() !== '0.0.0.0';
+            const key = Object.keys(o).find(k => /^(ip|host|bind|address|server)$|(Ip|Host|Address)$/.test(k) && usable(o[k]));
+            if (key) {
+                const prefix = key.replace(/(ip|host|bind|address|server|Ip|Host|Address)$/, '');
+                const port = Number(o[`${prefix}Port`]) || Number(o[`${prefix}port`]) || Number(o.port) || PORTS[adapter] || 0;
                 if (port > 0 && port < 65536) {
-                    return `${host.trim()}:${port}`;
+                    return `${o[key].trim()}:${port}`;
                 }
             }
             for (const v of Object.values(o)) {

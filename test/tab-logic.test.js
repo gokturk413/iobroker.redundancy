@@ -377,3 +377,9 @@ test('events: an instance failing or recovering, and the health the watchdog got
     assert.strictEqual(L.describeEvent({ event: 'instance', id: 'modbus.0', state: 'ok' }).level, 'info');
     assert.strictEqual(L.describeEvent({ event: 'health', score: 50, failed: 2, failing: ['a.0', 'b.0'] }).title, 'Critical instances failing: a.0, b.0');
 });
+
+test('probe target: rockwell plcHost and prosoft tcpHost/tcpPort (the lab instances)', () => {
+    assert.strictEqual(L.suggestTarget({ plcHost: '192.168.1.1', plcSlot: 0 }, 'rockwell-enip'), '192.168.1.1:44818');
+    assert.strictEqual(L.suggestTarget({ connectionType: 'rtu_over_tcp', serialPort: 'COM5', tcpHost: '192.168.64.130', tcpPort: 1502 }, 'prosoft_flow'), '192.168.64.130:1502');
+    assert.strictEqual(L.suggestTarget({ ip: '10.0.0.9' }, 'unknown'), '', 'no port known');
+});
