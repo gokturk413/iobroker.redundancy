@@ -217,6 +217,19 @@
       "native": {}
     },
     {
+      "_id": "health",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Instance health on this server: score, failing critical instances, the standby's device checks (JSON)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
+    },
+    {
       "_id": "control",
       "type": "channel",
       "common": {

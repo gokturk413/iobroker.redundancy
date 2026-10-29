@@ -318,3 +318,62 @@ test('the activation request of the pair is one file with every server request',
     assert.throws(() => L.activationBundle('h0-vm', [{ server: 'A', request: 'not json' }], 1), /A/);
     assert.throws(() => L.activationBundle('h0-vm', [], 1), /no server/);
 });
+
+// ── instance health (RFC-003 §2.11) ──────────────────────────────────────────
+test('health form: the RFC defaults and a probe target from the instance settings', () => {
+    const f = L.healthForm({ mode: 'cold', critical: true }, { ip: '192.168.1.1' }, 'rockwell-enip');
+    assert.strictEqual(f.onFailure, 'host');
+    assert.strictEqual(L.signalText(f), 'info.connection = false · 3× · 10 s');
+    assert.strictEqual(f.target, '192.168.1.1:44818');
+    assert.strictEqual(L.healthForm({ mode: 'cold' }, {}, 'x').onFailure, 'none');
+    assert.strictEqual(L.suggestTarget({ params: { type: 'tcp', bind: '10.0.0.5', port: 502 } }, 'modbus'), '10.0.0.5:502');
+    assert.strictEqual(L.suggestTarget({ endpoint: 'opc.tcp://plc:4841/ua' }, 'opcua'), 'plc:4841');
+    assert.strictEqual(L.suggestTarget({ bind: '0.0.0.0' }, 'modbus'), '', 'a listen address is no device');
+    const saved = L.healthForm({ critical: true, verify: { kind: 'none', target: 'a:1' }, health: { badWhen: '>= 5', detectMs: 20000 } }, { ip: 'x' }, 'modbus');
+    assert.strictEqual(saved.verify, 'none');
+    assert.strictEqual(saved.target, 'a:1', 'a saved target wins over the suggestion');
+    assert.strictEqual(L.signalText(saved), 'info.connection >= 5 · 3× · 20 s');
+});
+
+test('health patch: checked before it is saved', () => {
+    const f = L.healthForm({ critical: true }, { ip: '192.168.1.1' }, 'rockwell-enip');
+    assert.deepStrictEqual(L.healthPatch(f).patch, {
+        critical: true,
+        onFailure: 'host',
+        health: { state: 'info.connection', badWhen: 'false', failures: 3, detectMs: 10000, recoverMs: 30000 },
+        verify: { kind: 'probe', target: '192.168.1.1:44818' },
+    });
+    for (const [k, v] of [['state', 'a b'], ['badWhen', 'val === false'], ['failures', 0], ['detectS', 0.5], ['recoverS', -1], ['target', '192.168.1.1']]) {
+        assert.ok(L.healthPatch({ ...f, [k]: v }).error, `${k} = ${v}`);
+    }
+    assert.ok(L.healthPatch({ ...f, target: '', verify: 'none' }).patch, 'no target needed without a probe');
+    assert.ok(L.healthPatch({ ...f, target: '', critical: false }).patch, 'nor for an instance that is not critical');
+});
+
+test('health now: each server\'s report of one instance', () => {
+    const list = [
+        { name: 'A', health: { t: NOW, instances: { 'rockwell-enip.0': { state: 'failed', reach: null } }, failing: ['rockwell-enip.0'], problems: [] } },
+        { name: 'B', health: { t: NOW, instances: { 'rockwell-enip.0': { state: null, reach: true } } } },
+    ];
+    assert.deepStrictEqual(L.healthNow('rockwell-enip.0', list, NOW), {
+        level: 'bad',
+        text: 'failed on A · moves the primary from A · B reaches the device',
+    });
+    const field = [
+        { name: 'A', health: { t: NOW, instances: { 'm.0': { state: 'failed' } }, problems: [{ id: 'm.0', why: 'field problem: the device is unreachable from every server' }] } },
+        { name: 'B', health: { t: NOW - 60000, instances: { 'm.0': { reach: true } } } },
+    ];
+    assert.match(L.healthNow('m.0', field, NOW).text, /^failed on A · field problem/);
+    assert.deepStrictEqual(L.healthNow('m.0', field, NOW + 20000), { level: 'dim', text: 'no report yet' });
+    assert.deepStrictEqual(L.healthNow('x.0', [{ name: 'A', health: { t: NOW, instances: { 'x.0': { state: 'ok' } } } }], NOW), { level: 'good', text: 'ok on A' });
+});
+
+test('events: an instance failing or recovering, and the health the watchdog got', () => {
+    assert.deepStrictEqual(L.describeEvent({ event: 'instance', id: 'modbus.0', state: 'failed', critical: true, host: 'A' }), {
+        level: 'bad',
+        title: 'modbus.0 failed on A',
+        detail: 'critical',
+    });
+    assert.strictEqual(L.describeEvent({ event: 'instance', id: 'modbus.0', state: 'ok' }).level, 'info');
+    assert.strictEqual(L.describeEvent({ event: 'health', score: 50, failed: 2, failing: ['a.0', 'b.0'] }).title, 'Critical instances failing: a.0, b.0');
+});

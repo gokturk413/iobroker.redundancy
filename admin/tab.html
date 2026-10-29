@@ -66,6 +66,8 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
 .msg { padding: 10px 14px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); }
 .msg.bad { background: var(--bad-bg); color: var(--bad); }
 [hidden] { display: none !important; }
+.health-edit { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.health-edit label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -107,7 +109,11 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             <p class="dim" style="margin: 6px 0 12px"><b style="display: inline">cold</b>: runs only on the primary; on a switch it moves there and starts (any adapter, a few seconds).
             <b style="display: inline">hot</b>: runs on every server, only the primary writes; the adapter must hold back on the standby (its io-package says <code>common.redundancy.hot</code>). Until the hosts can run one instance on every server (H3), a hot instance moves like a cold one.
             <b style="display: inline">none</b>: stays on its host (admin, web, …). A serial line or RTU over TCP takes only one master: keep such an instance cold. Saving a mode restarts that instance.</p>
-            <div class="scroll"><table><thead><tr><th>Instance</th><th>Runs on</th><th>Enabled</th><th>Mode</th><th></th><th>Other server</th></tr></thead><tbody id="instances"></tbody></table></div>
+            <div class="scroll"><table><thead><tr><th>Instance</th><th>Runs on</th><th>Mode</th><th>On failure</th><th>Critical</th><th>Health signal</th><th>Check B before switching</th><th></th><th>Other server</th><th>Now</th></tr></thead><tbody id="instances"></tbody></table></div>
+            <p class="dim" style="margin: 12px 0 0">A <b style="display: inline">critical</b> instance fails when its health signal stays bad (N readings in a row, or for the detect time) or it is not alive; it counts as recovered only after the recover time of good.
+            <b style="display: inline">move whole primary</b>: when 2 critical instances fail on the primary (RFC-003 §2.11a), its watchdog switches to the standby — only if the standby checked out, outside the 60 s hold, at most 2 an hour, never under the maintenance lock, never to a server in a worse state.
+            <b style="display: inline">alarm only</b>: an event, no switch. <b style="display: inline">Check B</b>: probe = the standby opens a TCP connection to the device every 5 s (nothing is sent); if it cannot reach the device either, it is a field problem and nothing moves. Do not probe a gateway that takes only one client (RTU over TCP): choose none.
+            Health is sent to the watchdog with the API token of this instance's settings.</p>
         </div>
     </section>
 
@@ -289,7 +295,7 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         }
         states[id] = state;
         if (!drawTimer) {
-            drawTimer = setTimeout(() => { drawTimer = null; draw(); }, 200);
+            drawTimer = setTimeout(() => { drawTimer = null; draw(); drawNow(); }, 200);
         }
     });
 
@@ -372,12 +378,64 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     /** Only on load and after a save: a redraw on every state change would undo a choice not saved yet. */
     function drawInstances() {
         rows = L.instanceRows(objects);
-        $('instances').innerHTML = rows.map(r => `<tr>
-            <td><span style="font-family: var(--mono)">${esc(r.id)}</span>${r.resource ? `<br><span class="dim">${esc(r.resource.text)} · one master only</span>` : ''}</td>
-            <td>${esc(r.host)}</td><td>${r.enabled ? 'yes' : 'no'}</td>
-            <td><select data-id="${esc(r.id)}" aria-label="mode of ${esc(r.id)}">${L.MODES.map(m => `<option value="${m}"${m === r.mode ? ' selected' : ''}>${m}</option>`).join('')}</select></td>
-            <td><button type="button" data-save="${esc(r.id)}" disabled>Save</button></td>
-            <td>${readyCell(r)}</td></tr>`).join('');
+        $('instances').innerHTML = rows.map(r => {
+            const o = objects.find(x => x._id === `system.adapter.${r.id}`) || {};
+            const f = L.healthForm((o.common || {}).redundancy, o.native, r.adapter);
+            const id = esc(r.id);
+            const off = r.mode === 'none' ? ' disabled' : '';
+            const field = (name, attrs) => `<input data-row="${id}" data-f="${name}"${attrs}${off}>`;
+            return `<tr>
+            <td><span style="font-family: var(--mono)">${id}</span>${r.resource ? `<br><span class="dim">${esc(r.resource.text)} · one master only</span>` : ''}</td>
+            <td>${esc(r.host)}${r.enabled ? '' : '<br><span class="dim">disabled</span>'}</td>
+            <td><select data-id="${id}" aria-label="mode of ${id}">${L.MODES.map(m => `<option value="${m}"${m === r.mode ? ' selected' : ''}>${m}</option>`).join('')}</select></td>
+            <td><select data-row="${id}" data-f="onFailure" aria-label="on failure of ${id}"${off}>
+                <option value="host"${f.onFailure === 'host' ? ' selected' : ''}>move whole primary</option>
+                <option value="none"${f.onFailure === 'none' ? ' selected' : ''}>alarm only</option></select></td>
+            <td>${field('critical', ` type="checkbox" aria-label="${id} is critical"${f.critical ? ' checked' : ''}`)}</td>
+            <td><details><summary style="font-family: var(--mono); cursor: pointer">${esc(L.signalText(f))}</summary>
+                <div class="health-edit">
+                <label>state ${field('state', ` value="${esc(f.state)}" size="14"`)}</label>
+                <label>bad when ${field('badWhen', ` value="${esc(f.badWhen)}" size="6" title="false, true or a comparison like >= 5"`)}</label>
+                <label>${field('failures', ` type="number" min="1" max="100" value="${esc(f.failures)}" style="width: 4em"`)} readings</label>
+                <label>or ${field('detectS', ` type="number" min="1" max="600" value="${esc(f.detectS)}" style="width: 5em"`)} s</label>
+                <label>recover ${field('recoverS', ` type="number" min="0" max="3600" value="${esc(f.recoverS)}" style="width: 5em"`)} s</label>
+                </div></details></td>
+            <td><select data-row="${id}" data-f="verify" aria-label="check of the standby for ${id}"${off}>
+                <option value="probe"${f.verify === 'probe' ? ' selected' : ''}>probe (TCP)</option>
+                <option value="none"${f.verify === 'none' ? ' selected' : ''}>none</option></select>
+                ${field('target', ` value="${esc(f.target)}" size="16" placeholder="host:port" aria-label="device of ${id}"`)}
+                ${r.resource && r.resource.kind === 'single-client' && f.verify === 'probe' ? '<br><span class="meh">one client only: a probe may take its slot</span>' : ''}</td>
+            <td><button type="button" data-save="${id}" disabled>Save</button></td>
+            <td>${readyCell(r)}</td>
+            <td id="now-${id}">${nowCell(r)}</td></tr>`;
+        }).join('');
+    }
+
+    /** What the servers' health reports say about an instance now (redrawn with the states). */
+    function nowCell(r) {
+        if (r.mode === 'none') {
+            return '<span class="dim">not managed</span>';
+        }
+        const n = L.healthNow(r.id, L.servers(instances, states), Date.now());
+        return `<span class="${n.level === 'bad' ? 'badc' : n.level === 'warn' ? 'meh' : n.level === 'good' ? 'good' : 'dim'}">${esc(n.text)}</span>`;
+    }
+
+    function drawNow() {
+        for (const r of rows) {
+            const cell = document.getElementById(`now-${r.id}`);
+            if (cell) {
+                cell.innerHTML = nowCell(r);
+            }
+        }
+    }
+
+    /** The row's health fields as the form of L.healthPatch. */
+    function rowForm(id) {
+        const f = {};
+        for (const el of document.querySelectorAll(`[data-row="${CSS.escape(id)}"]`)) {
+            f[el.dataset.f] = el.type === 'checkbox' ? el.checked : el.value;
+        }
+        return f;
     }
 
     /** For an instance that follows the primary: can the other server start it; for hot, what can go wrong. */
@@ -393,13 +451,22 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     }
 
     async function saveMode(id, mode) {
+        let redundancy = { mode };
+        if (mode !== 'none') {
+            const { patch, error } = L.healthPatch(rowForm(id));
+            if (error) {
+                notice(`${id}: ${error}`, true);
+                return;
+            }
+            redundancy = { mode, ...patch };
+        }
         try {
-            await call('extendObject', `system.adapter.${id}`, { common: { redundancy: { mode } } });
+            await call('extendObject', `system.adapter.${id}`, { common: { redundancy } });
             const o = objects.find(x => x._id === `system.adapter.${id}`);
             if (o) {
-                o.common.redundancy = { ...(o.common.redundancy || {}), mode };
+                o.common.redundancy = { ...(o.common.redundancy || {}), ...redundancy };
             }
-            notice(`${id}: mode ${mode} saved`);
+            notice(`${id}: mode ${mode}${mode !== 'none' ? ', health settings' : ''} saved`);
             drawInstances();
         } catch (e) {
             notice(`${id}: ${e.message}`, true);
@@ -867,9 +934,16 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             drawSync(L.servers(instances, states));
         }
         const sel = ev.target.closest('select[data-id]');
-        if (sel) {
-            const btn = document.querySelector(`button[data-save="${CSS.escape(sel.dataset.id)}"]`);
+        const field = ev.target.closest('[data-row]');
+        const id = sel ? sel.dataset.id : field ? field.dataset.row : null;
+        if (id) {
+            const btn = document.querySelector(`button[data-save="${CSS.escape(id)}"]`);
             if (btn) { btn.disabled = false; }
+        }
+        if (sel) {
+            for (const el of document.querySelectorAll(`[data-row="${CSS.escape(sel.dataset.id)}"]`)) {
+                el.disabled = sel.value === 'none';
+            }
         }
     });
 })();

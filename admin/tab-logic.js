@@ -56,6 +56,7 @@
                     links: parseList(val('links')),
                     clientList: parseList(val('clientOptions')),
                     licence: parseMap(val('license.info')),
+                    health: parseMap(val('health')),
                 };
             })
             .sort((a, b) => a.name.localeCompare(b.name));
@@ -139,6 +140,18 @@
                     level: 'info',
                     title: Number(e.minutes) ? `Maintenance lock for ${e.minutes} min` : 'Maintenance lock lifted',
                     detail: join([e.reason, by]),
+                };
+            case 'instance':
+                return {
+                    level: e.state === 'failed' ? (e.critical ? 'bad' : 'warn') : 'info',
+                    title: `${e.id} ${e.state === 'failed' ? 'failed' : 'recovered'}${e.host ? ` on ${e.host}` : ''}`,
+                    detail: e.critical ? 'critical' : '',
+                };
+            case 'health':
+                return {
+                    level: Number(e.failed) ? 'bad' : 'info',
+                    title: Number(e.failed) ? `Critical instances failing: ${(e.failing || []).join(', ')}` : 'No critical instance failing',
+                    detail: `health ${e.score} %`,
                 };
             case 'alarm':
                 return { level: 'warn', title: String(e.what || 'alarm'), detail: '' };
@@ -526,5 +539,152 @@
         };
     }
 
-    return { licenceView, activationBundle, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES };
+    // ── instance health (RFC-003 §2.11, §2.11a); the adapter checks it again (lib/health.js) ──
+    const HEALTH_DEFAULTS = { state: 'info.connection', badWhen: 'false', failures: 3, detectMs: 10000, recoverMs: 30000 };
+    const BAD_WHEN = /^(false|true|(>=|<=|>|<|==|!=)\s*-?\d+(\.\d+)?)$/;
+    const TARGET = /^([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\]):(\d{1,5})$/;
+    /** A health report older than this is not shown as now. */
+    const HEALTH_STALE_MS = 15000;
+    /** Default ports of the device protocols, for the probe target suggestion. */
+    const PORTS = { 'rockwell-enip': 44818, rockwell_ethernetip: 44818, modbus: 502, prosoft_flow: 502, opcua: 4840, 'my-opcua': 4840, s7: 102 };
+
+    /**
+     * Where the standby could probe the instance's device, from its settings: an
+     * `opc.tcp://host:port` endpoint, Modbus `params.bind`/`port`, or a host/IP field with a
+     * port field (or the protocol's default port). '' when nothing fits.
+     */
+    function suggestTarget(native, adapter) {
+        const n = native && typeof native === 'object' ? native : {};
+        const scan = (o, depth) => {
+            if (!o || typeof o !== 'object' || depth > 2) {
+                return '';
+            }
+            for (const v of Object.values(o)) {
+                const m = typeof v === 'string' && /^opc\.tcp:\/\/([^/:\s]+):(\d+)/i.exec(v.trim());
+                if (m) {
+                    return `${m[1]}:${m[2]}`;
+                }
+            }
+            const host = ['ip', 'host', 'bind', 'address', 'plcIp', 'plcAddress', 'server'].map(k => o[k]).find(v => typeof v === 'string' && /^[A-Za-z0-9.-]+$/.test(v.trim()) && v.trim() !== '0.0.0.0');
+            if (host) {
+                const port = Number(o.port) || PORTS[adapter] || 0;
+                if (port > 0 && port < 65536) {
+                    return `${host.trim()}:${port}`;
+                }
+            }
+            for (const v of Object.values(o)) {
+                const r = scan(v, depth + 1);
+                if (r) {
+                    return r;
+                }
+            }
+            return '';
+        };
+        return scan(n, 0);
+    }
+
+    /** The health settings of an instance as the Instances view edits them. */
+    function healthForm(redundancy, native, adapter) {
+        const r = redundancy && typeof redundancy === 'object' ? redundancy : {};
+        const h = r.health && typeof r.health === 'object' ? r.health : {};
+        const v = r.verify && typeof r.verify === 'object' ? r.verify : {};
+        const critical = r.critical === true;
+        const suggested = suggestTarget(native, adapter);
+        return {
+            critical,
+            onFailure: r.onFailure === 'host' || r.onFailure === 'none' ? r.onFailure : critical ? 'host' : 'none',
+            state: typeof h.state === 'string' && h.state ? h.state : HEALTH_DEFAULTS.state,
+            badWhen: typeof h.badWhen === 'string' && BAD_WHEN.test(h.badWhen.trim()) ? h.badWhen.trim() : HEALTH_DEFAULTS.badWhen,
+            failures: Number.isInteger(h.failures) ? h.failures : HEALTH_DEFAULTS.failures,
+            detectS: Number.isInteger(h.detectMs) ? h.detectMs / 1000 : HEALTH_DEFAULTS.detectMs / 1000,
+            recoverS: Number.isInteger(h.recoverMs) ? h.recoverMs / 1000 : HEALTH_DEFAULTS.recoverMs / 1000,
+            verify: v.kind === 'none' ? 'none' : 'probe',
+            target: typeof v.target === 'string' && v.target ? v.target : suggested,
+            suggested,
+        };
+    }
+
+    /** The form → `common.redundancy` fields, or the first thing that is wrong. */
+    function healthPatch(f) {
+        const state = String(f.state || '').trim();
+        if (!/^[\w.-]+$/.test(state)) {
+            return { error: 'health state: a state id of the instance, like info.connection' };
+        }
+        const badWhen = String(f.badWhen || '').trim();
+        if (!BAD_WHEN.test(badWhen)) {
+            return { error: 'bad when: false, true or a comparison like >= 5' };
+        }
+        const failures = Number(f.failures);
+        if (!Number.isInteger(failures) || failures < 1 || failures > 100) {
+            return { error: 'failures: 1 … 100 readings' };
+        }
+        const detectMs = Math.round(Number(f.detectS) * 1000);
+        if (!(detectMs >= 1000 && detectMs <= 600000)) {
+            return { error: 'detect: 1 … 600 s' };
+        }
+        const recoverMs = Math.round(Number(f.recoverS) * 1000);
+        if (!(recoverMs >= 0 && recoverMs <= 3600000)) {
+            return { error: 'recover: 0 … 3600 s' };
+        }
+        const target = String(f.target || '').trim();
+        const m = TARGET.exec(target);
+        if (f.verify === 'probe' && f.critical && !(m && Number(m[2]) >= 1 && Number(m[2]) <= 65535)) {
+            return { error: 'check B: a probe needs the device as host:port (or choose none)' };
+        }
+        return {
+            patch: {
+                critical: f.critical === true,
+                onFailure: f.onFailure === 'host' ? 'host' : 'none',
+                health: { state, badWhen, failures, detectMs, recoverMs },
+                verify: { kind: f.verify === 'none' ? 'none' : 'probe', target },
+            },
+        };
+    }
+
+    /** `info.connection = false · 3× · 10 s` */
+    function signalText(f) {
+        return `${f.state} ${/^(false|true)$/.test(f.badWhen) ? `= ${f.badWhen}` : f.badWhen} · ${f.failures}× · ${f.detectS} s`;
+    }
+
+    /**
+     * What the servers' health reports say about one instance now: where it runs and how it
+     * is, whether each standby reaches its device, and why a failure does not move the primary.
+     */
+    function healthNow(id, list, now) {
+        const parts = [];
+        let level = 'good';
+        const worse = l => {
+            if (l === 'bad' || (l === 'warn' && level === 'good')) {
+                level = l;
+            }
+        };
+        for (const s of list) {
+            const h = s.health;
+            if (!h || !h.t || now - Number(h.t) > HEALTH_STALE_MS || !h.instances || !h.instances[id]) {
+                continue;
+            }
+            const i = h.instances[id];
+            if (i.state) {
+                parts.push(i.state === 'ok' ? `ok on ${s.name}` : `${i.state} on ${s.name}`);
+                worse(i.state === 'failed' ? 'bad' : i.state === 'suspect' ? 'warn' : 'good');
+            }
+            if (i.reach === true) {
+                parts.push(`${s.name} reaches the device`);
+            } else if (i.reach === false) {
+                parts.push(`${s.name} cannot reach the device`);
+                worse('warn');
+            }
+            for (const p of (Array.isArray(h.problems) ? h.problems : []).filter(x => x.id === id)) {
+                parts.push(p.why);
+                worse('bad');
+            }
+            if (Array.isArray(h.failing) && h.failing.includes(id)) {
+                parts.push(`moves the primary from ${s.name}`);
+                worse('bad');
+            }
+        }
+        return parts.length ? { level, text: parts.join(' · ') } : { level: 'dim', text: 'no report yet' };
+    }
+
+    return { healthForm, healthPatch, signalText, healthNow, suggestTarget, licenceView, activationBundle, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES, HEALTH_DEFAULTS };
 });

@@ -13,6 +13,8 @@ const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
 const { installedAdapters } = require('./lib/installed');
 const { checkPaths, listFiles, diff, writeFile } = require('./lib/syncfiles');
+const { healthConfig, parseTarget, Tracker, summarize } = require('./lib/health');
+const { tcpProbe } = require('./lib/probe');
 
 /** How often the watchdog config is read again (it changes only when someone edits it). */
 const CONFIG_MS = 60_000;
@@ -28,6 +30,13 @@ const WARN_EVENTS = new Set(['alarm', 'fence', 'failover-failed', 'api-error']);
 const POLL_MS = 1000;
 /** A primary checks this often that every cold instance is here (and at once on a switch). */
 const RECONCILE_MS = 5000;
+
+/** Instance health (RFC-003 §2.11): signals read every HEALTH_MS, the instance list every
+ * HEALTH_LIST_MS, a standby probes devices every PROBE_MS, the report goes out every REPORT_MS. */
+const HEALTH_MS = 1000;
+const HEALTH_LIST_MS = 10_000;
+const PROBE_MS = 5000;
+const REPORT_MS = 2000;
 
 class Redundancy extends utils.Adapter {
     constructor(options = {}) {
@@ -46,6 +55,10 @@ class Redundancy extends utils.Adapter {
         this.skipsSaid = new Map();
         this.installedTimer = null;
         this.configTimer = null;
+        this.healthTimer = null;
+        this.health = { rows: [], others: [], listedAt: 0, probedAt: 0, reportedAt: 0, busy: false, said: '', noToken: false };
+        this.trackers = new Map(); // id → {key, tracker, ts, alive}
+        this.reach = new Map(); // id → this server's last probe
         this.on('ready', () => this.onReady());
         this.on('stateChange', (id, state) => this.onStateChange(id, state));
         this.on('unload', cb => this.onUnload(cb));
@@ -95,6 +108,157 @@ class Redundancy extends utils.Adapter {
         }
         this.timer = setInterval(() => this.poll(), POLL_MS);
         this.poll();
+        this.healthTimer = setInterval(() => this.healthTick(), HEALTH_MS);
+    }
+
+    /** Managed instances with their health settings, and the other servers' redundancy instances. */
+    async healthList() {
+        const objs = Object.values((await this.getForeignObjectsAsync('system.adapter.*', 'instance')) || {});
+        this.health.rows = objs
+            .filter(o => /^(cold|hot)$/.test(o.common?.redundancy?.mode) && !/^system\.adapter\.redundancy\.\d+$/.test(o._id))
+            .map(o => ({
+                id: o._id.replace(/^system\.adapter\./, ''),
+                here: o.common.host === this.host && o.common.enabled === true,
+                cfg: healthConfig(o.common.redundancy),
+            }));
+        this.health.others = objs
+            .map(o => o._id.replace(/^system\.adapter\./, ''))
+            .filter(id => /^redundancy\.\d+$/.test(id) && id !== this.namespace);
+    }
+
+    /**
+     * Every second: the signal of each managed instance that runs here, a standby's device
+     * probes, this server's report (state `health`) and, to the watchdog, the critical
+     * instances whose failure moves the primary.
+     */
+    async healthTick() {
+        const h = this.health;
+        if (h.busy) {
+            return;
+        }
+        h.busy = true;
+        try {
+            const now = Date.now();
+            if (now - h.listedAt >= HEALTH_LIST_MS) {
+                h.listedAt = now;
+                await this.healthList();
+            }
+            const primary = this.last.role === 'primary';
+            if (primary) {
+                this.reach.clear();
+            } else if (now - h.probedAt >= PROBE_MS) {
+                h.probedAt = now;
+                this.probeDevices(h.rows).catch(() => {});
+            }
+            const rows = [];
+            for (const r of h.rows) {
+                rows.push({
+                    id: r.id,
+                    cfg: r.cfg,
+                    state: r.here ? await this.trackSignal(r, now) : undefined,
+                    reach: this.reach.get(r.id) ?? null,
+                });
+            }
+            for (const id of this.trackers.keys()) {
+                if (!h.rows.some(r => r.here && r.id === id)) {
+                    this.trackers.delete(id);
+                }
+            }
+            const peers = [];
+            for (const ns of h.others) {
+                try {
+                    peers.push(JSON.parse((await this.getForeignStateAsync(`${ns}.health`))?.val || 'null'));
+                } catch {
+                    // not written yet
+                }
+            }
+            const sum = summarize({ rows, primary, peers: peers.filter(Boolean), now });
+            const said = JSON.stringify([sum.failing, sum.problems]);
+            if (said !== h.said) {
+                h.said = said;
+                for (const p of sum.problems) {
+                    this.log.warn(`${p.id}: ${p.why}`);
+                }
+                if (sum.failing.length) {
+                    this.log.warn(`critical instance(s) failing, the standby checked out: ${sum.failing.join(', ')}`);
+                }
+            }
+            if (now - h.reportedAt >= REPORT_MS) {
+                h.reportedAt = now;
+                await this.setStateAsync('health', JSON.stringify({ t: now, host: this.host, role: this.last.role || '', ...sum }), true);
+                await this.reportHealth(sum);
+            }
+        } catch (e) {
+            this.log.debug(`instance health: ${e.message}`);
+        } finally {
+            h.busy = false;
+        }
+    }
+
+    /** One instance's tracker: fed when its signal or `alive` changed, else only the time. */
+    async trackSignal(r, now) {
+        const key = JSON.stringify(r.cfg.health);
+        let t = this.trackers.get(r.id);
+        if (!t || t.key !== key) {
+            t = { key, tracker: new Tracker(r.cfg.health), ts: null, alive: null };
+            this.trackers.set(r.id, t);
+        }
+        const sig = await this.getForeignStateAsync(`${r.id}.${r.cfg.health.state}`);
+        const alive = (await this.getForeignStateAsync(`system.adapter.${r.id}.alive`))?.val === true;
+        const before = t.tracker.state;
+        if ((sig && sig.ts !== t.ts) || alive !== t.alive) {
+            t.ts = sig ? sig.ts : null;
+            t.alive = alive;
+            t.tracker.feed(sig ? sig.val : null, alive, now);
+        } else {
+            t.tracker.tick(now);
+        }
+        const state = t.tracker.state;
+        if (state !== before && (state === 'failed' || before === 'failed')) {
+            if (state === 'failed') {
+                this.log.warn(`${r.id} failed: ${alive ? `${r.cfg.health.state} ${r.cfg.health.badWhen}` : 'not alive'}`);
+            } else {
+                this.log.info(`${r.id} recovered`);
+            }
+            this.events = pushEvent(this.events, { t: now, event: 'instance', id: r.id, state, critical: r.cfg.critical, host: this.host }, MAX_EVENTS);
+            await this.setStateAsync('events', JSON.stringify(this.events), true);
+        }
+        return state;
+    }
+
+    /** A standby's check that it could reach each critical instance's device. */
+    async probeDevices(rows) {
+        await Promise.all(
+            rows
+                .filter(r => r.cfg.critical && r.cfg.verify.kind === 'probe' && r.cfg.verify.target)
+                .map(async r => this.reach.set(r.id, await tcpProbe(parseTarget(r.cfg.verify.target), 2000))),
+        );
+    }
+
+    /** The watchdog takes the score into its heartbeat, and moves the primary on the failures. */
+    async reportHealth(sum) {
+        if (!this.apiWhere || !this.apiUp) {
+            return;
+        }
+        if (!this.config.apiToken) {
+            if (!this.health.noToken) {
+                this.health.noToken = true;
+                this.log.warn('instance health is not sent to the watchdog: set the watchdog API token in the settings');
+            }
+            return;
+        }
+        try {
+            const reply = await request(
+                this.apiWhere,
+                { op: 'health', score: sum.score, failed: sum.failing.length, failing: sum.failing, token: this.config.apiToken },
+                2000,
+            );
+            if (reply.type === 'error') {
+                this.log.debug(`health refused by the watchdog: ${reply.error}`);
+            }
+        } catch (e) {
+            this.log.debug(`health: ${e.message}`);
+        }
     }
 
     /** This host's node_modules (the folder this adapter is installed in). */
@@ -496,6 +660,9 @@ class Redundancy extends utils.Adapter {
             }
             if (this.configTimer) {
                 clearInterval(this.configTimer);
+            }
+            if (this.healthTimer) {
+                clearInterval(this.healthTimer);
             }
             this.api?.stop();
         } finally {
