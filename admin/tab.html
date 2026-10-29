@@ -42,7 +42,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .badge { padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; letter-spacing: .04em; background: var(--line); }
 .badge.primary { background: var(--ok-bg); color: var(--ok); }
 .badge.standby { background: var(--warn-bg); color: var(--warn); }
-.badge.fenced, .badge.offline { background: var(--bad-bg); color: var(--bad); }
+.badge.fenced, .badge.offline, .badge.stopped { background: var(--bad-bg); color: var(--bad); }
 .server.primary { border-color: #2f6b4a; }
 dl { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; font-size: 13px; }
 dt { color: var(--dim); }
@@ -158,9 +158,24 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
                 <b>Client address (VIP)</b>
                 <p class="dim" style="margin: 6px 0 0">A virtual IP that follows the primary comes in a later version (H4). Until then clients reach the primary through Sentinel (ioBroker hosts) or by its own address.</p>
             </div>
-            <div class="card">
+            <div class="card" style="grid-column: 1 / -1">
                 <b>Licence</b>
-                <p class="dim" style="margin: 6px 0 0">Not in this version: the redundancy engine runs without a licence key for now.</p>
+                <p class="dim" style="margin: 6px 0 10px">One key for the whole cluster: it lists the hardware ids of every server. Each watchdog checks it itself. Without a key the trial runs 14 days; after that the watchdogs stop (no failover, no fence).</p>
+                <div id="lic-summary" style="margin-bottom: 10px"></div>
+                <div class="scroll"><table><thead><tr><th>Server</th><th>State</th><th>What to do</th><th>Hardware ids</th></tr></thead><tbody id="lic-rows"></tbody></table></div>
+                <div class="grid" style="margin-top: 14px; grid-template-columns: minmax(260px, 2fr) minmax(200px, 1fr)">
+                    <label><b>Licence key (or the activation response file)</b>
+                        <input id="lic-key" type="password" autocomplete="off" spellcheck="false" placeholder="paste the key" style="width: 100%; min-height: 40px; margin-top: 6px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font: inherit; padding: 0 12px">
+                    </label>
+                    <label><b>or the response file</b>
+                        <input id="lic-file" type="file" accept=".json,.txt,.lic" style="width: 100%; margin-top: 10px">
+                    </label>
+                </div>
+                <div class="controls" style="margin-top: 12px">
+                    <button type="button" id="lic-request">Create activation request (A + B)</button>
+                    <button type="button" id="lic-enter" class="primary">Enter on every server</button>
+                    <span id="lic-msg" class="dim"></span>
+                </div>
             </div>
             <div class="card">
                 <b>Instance settings of each server</b>
@@ -308,6 +323,7 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         $('settings').innerHTML = list.map(x => `<li><a target="_top" href="/#tab-instances/config/system.adapter.${esc(x.instance)}">${esc(x.instance)}</a> on ${esc(x.iobHost)} (${esc(x.name)})</li>`).join('');
         drawSettings(list);
         drawSync(list);
+        drawLicence(list);
     }
 
     /** One value, or each server's value when they differ. */
@@ -630,6 +646,72 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         notice(failed.length ? `Sync to ${s.dst.name}: failed for ${failed.join(', ')} (see the output)` : `Sync to ${s.dst.name} done`, failed.length > 0);
     }
 
+    function drawLicence(list) {
+        const v = L.licenceView(list);
+        const names = list.map(x => x.name);
+        $('lic-request').textContent = `Create activation request (${names.join(' + ') || 'A + B'})`;
+        const parts = [];
+        if (v.licenseId) {
+            parts.push(`Licence ${esc(v.licenseId)}${v.owner ? ` · ${esc(v.owner)}` : ''}${v.clusterId ? ` · cluster ${esc(v.clusterId)}` : ''}${v.maxServers ? ` · ${esc(v.maxServers)} servers` : ''}${v.expiresAt ? ` · until ${esc(v.expiresAt)}` : ''}`);
+        }
+        parts.push(v.allValid ? '<span class="good">valid on every server</span>' : '<span class="meh">not valid on every server</span>');
+        $('lic-summary').innerHTML = parts.join(' · ');
+        const cls = r => (r.valid ? 'good' : r.stops ? 'badc' : 'meh');
+        $('lic-rows').innerHTML = v.rows.map(r => `<tr><td>${esc(r.name)}</td>
+            <td class="${cls(r)}">${esc(r.state || 'not reported yet')}${r.daysLeft ? ` (${esc(r.daysLeft)} days)` : ''}</td>
+            <td>${esc(r.message || '—')}</td>
+            <td style="font-family: var(--mono); font-size: 12px">${r.hardwareIds.map(esc).join('<br>') || '—'}</td></tr>`).join('');
+    }
+
+    function licMsg(text, bad) {
+        $('lic-msg').textContent = text || '';
+        $('lic-msg').className = bad ? 'badc' : 'dim';
+    }
+
+    /** Every server's activation request, bundled into one file to send to the vendor. */
+    async function licenceRequest() {
+        const list = L.servers(instances, states).filter(x => x.connected);
+        if (!list.length) { licMsg('no watchdog is running', true); return; }
+        const got = [];
+        for (const x of list) {
+            licMsg(`asking ${x.name}…`);
+            const r = await sendTo(x.instance, 'activation', { by: 'admin tab' });
+            if (r.error) { licMsg(`${x.name}: ${r.error}`, true); return; }
+            got.push({ server: x.name, request: r.request });
+        }
+        const cluster = (list.find(x => x.config && x.config.cluster) || {}).config;
+        const name = (cluster && cluster.cluster) || 'cluster';
+        const bundle = L.activationBundle(name, got, Date.now());
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' }));
+        a.download = `redundancy-activation-${name.replace(/[^A-Za-z0-9._-]/g, '_')}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        licMsg(`${a.download} saved (${got.map(g => g.server).join(' + ')}). Send it to the vendor; enter the key you get back.`);
+    }
+
+    async function licenceEnter() {
+        let key = $('lic-key').value.trim();
+        const f = $('lic-file').files && $('lic-file').files[0];
+        if (!key && f) { key = (await f.text()).trim(); }
+        if (!key) { licMsg('paste the key or choose the response file', true); return; }
+        const list = L.servers(instances, states);
+        const off = list.filter(x => !x.connected);
+        if (off.length) { licMsg(`${off.map(x => x.name).join(', ')}: watchdog not running; the key must go to every server`, true); return; }
+        const done = [];
+        for (const x of list) {
+            licMsg(`entering on ${x.name}…`);
+            const r = await sendTo(x.instance, 'licence', { key, by: 'admin tab' });
+            if (r.error) { licMsg(`${x.name} refused the key: ${r.error}${done.length ? ` (entered on ${done.join(', ')})` : ''}`, true); return; }
+            done.push(`${x.name}: ${r.state}`);
+        }
+        $('lic-key').value = '';
+        $('lic-file').value = '';
+        licMsg(`entered · ${done.join(' · ')}`);
+    }
+
     async function command(id, val) {
         await call('setState', id, { val, ack: false });
     }
@@ -689,6 +771,15 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             $('hotdialog').close();
             await saveMode(hotFor, 'cold');
             hotFor = null;
+        } else if (b.id === 'lic-request' || b.id === 'lic-enter') {
+            b.disabled = true;
+            try {
+                await (b.id === 'lic-request' ? licenceRequest() : licenceEnter());
+            } catch (e) {
+                licMsg(e.message, true);
+            } finally {
+                b.disabled = false;
+            }
         } else if (b.id === 'syncgo') {
             try {
                 await syncRun();

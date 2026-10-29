@@ -297,3 +297,24 @@ test('sync: a name or version that is not plain is never put into a command', ()
     assert.deepStrictEqual(p.steps.map(s => s.cmd), ['iobroker install good-one@1.2.3', 'iobroker install hm@2.0.0-beta.1']);
     assert.deepStrictEqual(p.refused.sort(), ['web', 'x;rm -rf /']);
 });
+
+test('licence: each server says its state and what to do', () => {
+    const info = (state, extra = {}) => st(JSON.stringify({ state, valid: state === 'valid', stops: state === 'trial-expired', message: `m-${state}`, hardwareIds: ['hw3-x'], ...extra }));
+    const list = pair({ 'redundancy.0.license.info': info('valid', { licenseId: 'R-1', owner: 'Plant Ltd', maxServers: 2 }), 'redundancy.1.license.info': info('trial', { daysLeft: 9 }) });
+    const v = L.licenceView(list);
+    assert.deepStrictEqual(v.rows.map(r => [r.name, r.state, r.message]), [['A', 'valid', 'm-valid'], ['B', 'trial', 'm-trial']]);
+    assert.strictEqual(v.allValid, false);
+    assert.strictEqual(v.licenseId, 'R-1');
+    assert.strictEqual(L.licenceView(pair()).rows[0].state, '', 'not reported yet');
+});
+
+test('the activation request of the pair is one file with every server request', () => {
+    const r = n => JSON.stringify({ format: 'scada-activation-request/1', product: 'scada-redundancy', hostName: n, hardwareIds: [`hw3-${n}`], check: 'c' });
+    const b = L.activationBundle('h0-vm', [{ server: 'A', request: r('A') }, { server: 'B', request: r('B') }], 1000);
+    assert.strictEqual(b.format, 'scada-activation-bundle/1');
+    assert.strictEqual(b.product, 'scada-redundancy');
+    assert.strictEqual(b.cluster, 'h0-vm');
+    assert.deepStrictEqual(b.requests.map(x => x.hostName), ['A', 'B']);
+    assert.throws(() => L.activationBundle('h0-vm', [{ server: 'A', request: 'not json' }], 1), /A/);
+    assert.throws(() => L.activationBundle('h0-vm', [], 1), /no server/);
+});

@@ -330,6 +330,79 @@
         "def": "{}"
       },
       "native": {}
+    },
+    {
+      "_id": "license",
+      "type": "channel",
+      "common": {
+        "name": "Licence of the redundancy (checked by the watchdog of this host)"
+      },
+      "native": {}
+    },
+    {
+      "_id": "license.valid",
+      "type": "state",
+      "common": {
+        "role": "indicator",
+        "name": "Licensed (true only in the state valid)",
+        "type": "boolean",
+        "read": true,
+        "write": false,
+        "def": false
+      },
+      "native": {}
+    },
+    {
+      "_id": "license.state",
+      "type": "state",
+      "common": {
+        "role": "text",
+        "name": "Licence state (valid, trial, trial-expired, grace, ...)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
+    },
+    {
+      "_id": "license.message",
+      "type": "state",
+      "common": {
+        "role": "text",
+        "name": "What to do",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
+    },
+    {
+      "_id": "license.hardwareId",
+      "type": "state",
+      "common": {
+        "role": "text",
+        "name": "Hardware ids of this server (for the activation request)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": ""
+      },
+      "native": {}
+    },
+    {
+      "_id": "license.info",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Licence as the watchdog reports it (JSON, never the key)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": "{}"
+      },
+      "native": {}
     }
   ],
   "encryptedNative": [

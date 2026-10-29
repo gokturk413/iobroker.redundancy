@@ -55,6 +55,7 @@
                     config: parseMap(val('watchdogConfig')),
                     links: parseList(val('links')),
                     clientList: parseList(val('clientOptions')),
+                    licence: parseMap(val('license.info')),
                 };
             })
             .sort((a, b) => a.name.localeCompare(b.name));
@@ -479,5 +480,51 @@
         return { steps, extra, refused };
     }
 
-    return { syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES };
+    /** The Licence card: each server's licence as its watchdog checked it. */
+    function licenceView(list) {
+        const rows = list.map(s => ({
+            name: s.name,
+            state: String(s.licence.state || ''),
+            valid: s.licence.valid === true,
+            stops: s.licence.stops === true,
+            daysLeft: Number(s.licence.daysLeft) || 0,
+            message: String(s.licence.message || ''),
+            hardwareIds: Array.isArray(s.licence.hardwareIds) ? s.licence.hardwareIds.map(String) : [],
+        }));
+        const keyed = list.map(s => s.licence).find(l => l.licenseId) || {};
+        return {
+            rows,
+            allValid: rows.length > 0 && rows.every(r => r.valid),
+            licenseId: keyed.licenseId || '',
+            owner: keyed.owner || '',
+            maxServers: keyed.maxServers || null,
+            clusterId: keyed.clusterId || '',
+            expiresAt: keyed.expiresAt || '',
+        };
+    }
+
+    /**
+     * One activation request for the pair: every server's sealed request in one file, signed
+     * as one cluster key (Kamran 2026-10-28). Each request stays as its server made it.
+     */
+    function activationBundle(cluster, requests, nowMs) {
+        if (!requests.length) {
+            throw new Error('no server answered');
+        }
+        return {
+            format: 'scada-activation-bundle/1',
+            product: 'scada-redundancy',
+            cluster,
+            createdAtMs: nowMs,
+            requests: requests.map(({ server, request }) => {
+                try {
+                    return JSON.parse(request);
+                } catch {
+                    throw new Error(`the request of ${server} is not readable`);
+                }
+            }),
+        };
+    }
+
+    return { licenceView, activationBundle, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES };
 });

@@ -234,6 +234,10 @@ class Redundancy extends utils.Adapter {
             answer({ ok: true, installed: this.installed() });
             return;
         }
+        if (obj && (obj.command === 'activation' || obj.command === 'licence')) {
+            await this.onLicenceMessage(obj, answer);
+            return;
+        }
         if (!obj || obj.command !== 'settings') {
             return;
         }
@@ -263,6 +267,50 @@ class Redundancy extends utils.Adapter {
                 await this.refreshConfig();
             }
             answer({ ok: true, config: reply.config });
+        } catch (e) {
+            answer({ error: e.message });
+        }
+    }
+
+    /**
+     * The Licence card of the admin tab: this server's activation request (the tab bundles
+     * every server's into one file), and the cluster's key for this server's watchdog,
+     * which checks it itself. Both from an admin instance only.
+     */
+    async onLicenceMessage(obj, answer) {
+        const by = settingsSender(obj);
+        if (!by) {
+            this.log.warn(`${obj.command} from ${obj.from} refused: only the admin tab may ask`);
+            answer({ error: 'only an admin instance may do this' });
+            return;
+        }
+        let req;
+        if (obj.command === 'activation') {
+            req = { op: 'activation' };
+        } else {
+            const key = obj.message && typeof obj.message.key === 'string' ? obj.message.key.trim() : null;
+            if (key === null || key.length > 3500) {
+                answer({ error: 'licence: the key (or the activation response file) is needed' });
+                return;
+            }
+            if (!this.config.apiToken) {
+                answer({ error: 'set the watchdog API token in the settings of this instance first' });
+                return;
+            }
+            req = { op: 'licence', key, token: this.config.apiToken };
+        }
+        try {
+            const reply = await request(this.apiWhere, req);
+            if (reply.type === 'error') {
+                answer({ error: reply.error });
+                return;
+            }
+            if (obj.command === 'licence') {
+                this.log.info(`licence key ${req.key ? 'entered' : 'removed'} by ${by}: ${reply.state} (${reply.message})`);
+            }
+            // eslint-disable-next-line no-unused-vars
+            const { type, ...body } = reply;
+            answer({ ok: true, ...body });
         } catch (e) {
             answer({ error: e.message });
         }

@@ -93,3 +93,21 @@ test('settings are taken from an admin instance only, and "by" is who sent them'
     assert.strictEqual(settingsSender({ from: 'system.host.A.cli', message: {} }), null);
     assert.strictEqual(settingsSender({ from: 'system.adapter.admin.0', message: { by: 'x\n\u001b[31mfake' } }), 'admin.0 (x [31mfake)', 'no control characters in the log');
 });
+
+test('the licence of the watchdog becomes the license.* states, written with every status', () => {
+    const licence = {
+        state: 'trial', valid: false, stops: false, daysLeft: 12, reason: null,
+        message: 'trial: 12 days left. Create the activation request (A + B) and enter the key you get back',
+        licenseId: null, owner: null, hardwareIds: ['hw3-a1', 'hw3-a2'],
+    };
+    const s = statusToStates({ ...fresh, licence }, fresh.t);
+    assert.strictEqual(s['license.valid'], false);
+    assert.strictEqual(s['license.state'], 'trial');
+    assert.match(s['license.message'], /12 days left/);
+    assert.strictEqual(s['license.hardwareId'], 'hw3-a1, hw3-a2');
+    assert.deepStrictEqual(JSON.parse(s['license.info']), licence);
+    const valid = statusToStates({ ...fresh, licence: { ...licence, state: 'valid', valid: true } }, fresh.t);
+    assert.strictEqual(valid['license.valid'], true);
+    assert.strictEqual(statusToStates({ ...fresh, role: 'stopped', licence: { ...licence, state: 'trial-expired', stops: true } }, fresh.t).role, 'stopped');
+    assert.strictEqual(statusToStates(fresh, fresh.t)['license.state'], undefined, 'an older watchdog without a licence: no license states');
+});
