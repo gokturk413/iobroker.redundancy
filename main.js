@@ -15,6 +15,10 @@ const { installedAdapters } = require('./lib/installed');
 const { checkPaths, listFiles, diff, writeFile } = require('./lib/syncfiles');
 const { healthConfig, parseTarget, Tracker, summarize } = require('./lib/health');
 const { tcpProbe } = require('./lib/probe');
+const { InstanceCache } = require('./lib/instances');
+
+/** The highest character of an ioBroker view range (`endkey`). */
+const VIEW_END = String.fromCharCode(0x9999);
 
 /** How often the watchdog config is read again (it changes only when someone edits it). */
 const CONFIG_MS = 60_000;
@@ -58,6 +62,11 @@ class Redundancy extends utils.Adapter {
         this.healthTimer = null;
         this.health = { rows: [], others: [], listedAt: 0, probedAt: 0, reportedAt: 0, busy: false, said: '', noToken: false };
         this.trackers = new Map(); // id → {key, tracker, ts, alive}
+        // the instance objects, read once and then followed (one may be megabytes: lib/instances.js)
+        this.instanceCache = new InstanceCache(async () =>
+            ((await this.getObjectViewAsync('system', 'instance', { startkey: 'system.adapter.', endkey: `system.adapter.${VIEW_END}` })).rows || []).map(r => r.value),
+        );
+        this.on('objectChange', (id, obj) => this.instanceCache.apply(id, obj));
         this.reach = new Map(); // id → this server's last probe
         this.on('ready', () => this.onReady());
         this.on('stateChange', (id, state) => this.guard('command', this.onStateChange(id, state)));
@@ -108,12 +117,13 @@ class Redundancy extends utils.Adapter {
         }
         this.timer = setInterval(() => this.guard('status', this.poll(), 'debug'), POLL_MS);
         this.guard('status', this.poll(), 'debug');
+        this.subscribeForeignObjects('system.adapter.*');
         this.healthTimer = setInterval(() => this.healthTick(), HEALTH_MS);
     }
 
     /** Managed instances with their health settings, and the other servers' redundancy instances. */
     async healthList() {
-        const objs = Object.values((await this.getForeignObjectsAsync('system.adapter.*', 'instance')) || {});
+        const objs = await this.instanceCache.list();
         this.health.rows = objs
             .filter(o => /^(cold|hot)$/.test(o.common?.redundancy?.mode) && !/^system\.adapter\.redundancy\.\d+$/.test(o._id))
             .map(o => ({
@@ -605,11 +615,20 @@ class Redundancy extends utils.Adapter {
         if (this.moving || !this.addon || !primary || !due) {
             return;
         }
+        // after a switch the instance list is read in full: an object event may have been lost
+        // while the Redis master changed
+        const switched = sw !== this.lastSwitch;
         this.lastSwitch = sw;
         this.lastReconcile = Date.now();
         this.moving = true;
-        reconcile({ status: { role: states.role, peer: states.peer }, me: this.host, addon: this.addon, io: this.io() })
-            .then(results => this.reportMoves(results))
+        (switched ? this.instanceCache.refresh() : Promise.resolve())
+            .then(() => reconcile({ status: { role: states.role, peer: states.peer }, me: this.host, addon: this.addon, io: this.io() }))
+            .then(async results => {
+                if (results.moves.length) {
+                    await this.instanceCache.refresh();
+                }
+                return this.reportMoves(results);
+            })
             .catch(e => this.log.error(`moving cold instances: ${e.message}`))
             .finally(() => {
                 this.moving = false;
@@ -642,10 +661,7 @@ class Redundancy extends utils.Adapter {
     /** Object and state access for lib/moves.js. */
     io() {
         const sys = id => `system.adapter.${id}`;
-        const all = async () =>
-            Object.values(
-                (await this.getForeignObjectsAsync('system.adapter.*', 'instance')) || {},
-            );
+        const all = () => this.instanceCache.list();
         return {
             getInstances: async () => (await all()).map(instanceFromObject).filter(Boolean),
             getPair: async () => pairHosts(await all()),
