@@ -384,27 +384,29 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             const id = esc(r.id);
             const off = r.mode === 'none' ? ' disabled' : '';
             const field = (name, attrs) => `<input data-row="${id}" data-f="${name}"${attrs}${off}>`;
+            // an instance that does not follow the primary shows a dash; choosing cold or hot opens the fields
+            const managed = html => `<span class="dim" data-dash="${id}"${off ? '' : ' hidden'}>—</span><div data-cells="${id}"${off ? ' hidden' : ''}>${html}</div>`;
             return `<tr>
             <td><span style="font-family: var(--mono)">${id}</span>${r.resource ? `<br><span class="dim">${esc(r.resource.text)} · one master only</span>` : ''}</td>
             <td>${esc(r.host)}${r.enabled ? '' : '<br><span class="dim">disabled</span>'}</td>
             <td><select data-id="${id}" aria-label="mode of ${id}">${L.MODES.map(m => `<option value="${m}"${m === r.mode ? ' selected' : ''}>${m}</option>`).join('')}</select></td>
-            <td><select data-row="${id}" data-f="onFailure" aria-label="on failure of ${id}"${off}>
+            <td>${managed(`<select data-row="${id}" data-f="onFailure" aria-label="on failure of ${id}"${off}>
                 <option value="host"${f.onFailure === 'host' ? ' selected' : ''}>move whole primary</option>
-                <option value="none"${f.onFailure === 'none' ? ' selected' : ''}>alarm only</option></select></td>
-            <td>${field('critical', ` type="checkbox" aria-label="${id} is critical"${f.critical ? ' checked' : ''}`)}</td>
-            <td><details><summary style="font-family: var(--mono); cursor: pointer">${esc(L.signalText(f))}</summary>
+                <option value="none"${f.onFailure === 'none' ? ' selected' : ''}>alarm only</option></select>`)}</td>
+            <td>${managed(field('critical', ` type="checkbox" aria-label="${id} is critical"${f.critical ? ' checked' : ''}`))}</td>
+            <td>${managed(`<details><summary style="font-family: var(--mono); cursor: pointer">${esc(L.signalText(f))}</summary>
                 <div class="health-edit">
                 <label>state ${field('state', ` value="${esc(f.state)}" size="14"`)}</label>
                 <label>bad when ${field('badWhen', ` value="${esc(f.badWhen)}" size="6" title="false, true or a comparison like >= 5"`)}</label>
                 <label>${field('failures', ` type="number" min="1" max="100" value="${esc(f.failures)}" style="width: 4em"`)} readings</label>
                 <label>or ${field('detectS', ` type="number" min="1" max="600" value="${esc(f.detectS)}" style="width: 5em"`)} s</label>
                 <label>recover ${field('recoverS', ` type="number" min="0" max="3600" value="${esc(f.recoverS)}" style="width: 5em"`)} s</label>
-                </div></details></td>
-            <td><select data-row="${id}" data-f="verify" aria-label="check of the standby for ${id}"${off}>
+                </div></details>`)}</td>
+            <td>${managed(`<select data-row="${id}" data-f="verify" aria-label="check of the standby for ${id}"${off}>
                 <option value="probe"${f.verify === 'probe' ? ' selected' : ''}>probe (TCP)</option>
                 <option value="none"${f.verify === 'none' ? ' selected' : ''}>none</option></select>
                 ${field('target', ` value="${esc(f.target)}" size="16" placeholder="host:port" aria-label="device of ${id}"`)}
-                ${r.resource && r.resource.kind === 'single-client' && f.verify === 'probe' ? '<br><span class="meh">one client only: a probe may take its slot</span>' : ''}</td>
+                ${r.resource && r.resource.kind === 'single-client' && f.verify === 'probe' ? '<br><span class="meh">one client only: a probe may take its slot</span>' : ''}`)}</td>
             <td><button type="button" data-save="${id}" disabled>Save</button></td>
             <td>${readyCell(r)}</td>
             <td id="now-${id}">${nowCell(r)}</td></tr>`;
@@ -943,6 +945,12 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         if (sel) {
             for (const el of document.querySelectorAll(`[data-row="${CSS.escape(sel.dataset.id)}"]`)) {
                 el.disabled = sel.value === 'none';
+            }
+            for (const el of document.querySelectorAll(`[data-dash="${CSS.escape(sel.dataset.id)}"]`)) {
+                el.hidden = sel.value !== 'none';
+            }
+            for (const el of document.querySelectorAll(`[data-cells="${CSS.escape(sel.dataset.id)}"]`)) {
+                el.hidden = sel.value === 'none';
             }
         }
     });
