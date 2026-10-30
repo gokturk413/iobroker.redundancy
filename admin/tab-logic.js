@@ -689,5 +689,88 @@
         return parts.length ? { level, text: parts.join(' · ') } : { level: 'dim', text: 'no report yet' };
     }
 
-    return { healthForm, healthPatch, signalText, healthNow, suggestTarget, licenceView, activationBundle, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES, HEALTH_DEFAULTS };
+    // ── per-server settings (RFC-003 §2.9, scada.js-controller core patch #6) ─────────
+    const OVERRIDES_PREFIX = 'system.redundancy.overrides';
+    /** Names that are usually bound to one machine or are secrets. */
+    const PER_SERVER_NAME = /licen[cs]e|token|key|cert|passw|secret/i;
+
+    /** `system.redundancy.overrides.<host>.<ns>`, the host name as one id part (as the controller). */
+    function overrideId(host, ns) {
+        return `${OVERRIDES_PREFIX}.${String(host).replace(/[\][*,;'"`<>\\?.\s]/g, '_')}.${ns}`;
+    }
+
+    /**
+     * The attributes of an instance that may be set per server: those already set per server
+     * first, then `encryptedNative` / `protectedNative` and native names like licenseKey, token.
+     *
+     * @param {object} obj system.adapter.<ns>
+     * @param {Record<string, object>} overrides host → its override object (or missing)
+     */
+    function perServerFields(obj, overrides) {
+        const o = obj || {};
+        const secret = new Set([...(Array.isArray(o.encryptedNative) ? o.encryptedNative : []), ...(Array.isArray(o.protectedNative) ? o.protectedNative : [])]);
+        const used = new Set();
+        for (const ov of Object.values(overrides || {})) {
+            Object.keys((ov && ov.native) || {}).forEach(k => used.add(k));
+        }
+        const named = Object.entries(o.native || {})
+            .filter(([k, v]) => typeof v !== 'object' && PER_SERVER_NAME.test(k))
+            .map(([k]) => k);
+        const keys = [...used, ...[...secret, ...named].filter(k => !used.has(k)).sort()];
+        return [...new Set(keys)].map(key => ({ key, secret: secret.has(key) || PER_SERVER_NAME.test(key), perServer: used.has(key) }));
+    }
+
+    /**
+     * Which server has a value for each per-server attribute; a secret is never shown, only
+     * whether it is set. `missing`: servers that would fall back to the shared value.
+     */
+    function perServerRows(obj, hosts, overrides) {
+        return perServerFields(obj, overrides)
+            .filter(f => f.perServer)
+            .map(f => {
+                const values = {};
+                const missing = [];
+                for (const h of hosts) {
+                    const n = (overrides[h] && overrides[h].native) || {};
+                    const set = Object.prototype.hasOwnProperty.call(n, f.key);
+                    values[h] = { set, value: set && !f.secret ? String(n[f.key]) : '' };
+                    if (!set) {
+                        missing.push(h);
+                    }
+                }
+                return { key: f.key, secret: f.secret, values, missing };
+            });
+    }
+
+    /**
+     * The form (host → attribute → typed value, '' = unchanged; `remove` lists host:key pairs)
+     * against the current overrides → the native to write per host (null: delete the object).
+     */
+    function perServerPatch(form, overrides) {
+        const out = {};
+        const hosts = new Set([...Object.keys(form.values || {}), ...(form.remove || []).map(r => r.split(':')[0])]);
+        for (const h of hosts) {
+            const native = { ...(((overrides || {})[h] || {}).native || {}) };
+            let changed = false;
+            for (const [k, v] of Object.entries((form.values || {})[h] || {})) {
+                if (typeof v === 'string' && v !== '') {
+                    native[k] = v;
+                    changed = true;
+                }
+            }
+            for (const r of form.remove || []) {
+                const [rh, rk] = [r.slice(0, r.indexOf(':')), r.slice(r.indexOf(':') + 1)];
+                if (rh === h && rk in native) {
+                    delete native[rk];
+                    changed = true;
+                }
+            }
+            if (changed) {
+                out[h] = Object.keys(native).length ? native : null;
+            }
+        }
+        return out;
+    }
+
+    return { overrideId, perServerFields, perServerRows, perServerPatch, healthForm, healthPatch, signalText, healthNow, suggestTarget, licenceView, activationBundle, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES, HEALTH_DEFAULTS };
 });

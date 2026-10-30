@@ -115,6 +115,22 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             <b style="display: inline">alarm only</b>: an event, no switch. <b style="display: inline">Check B</b>: probe = the standby opens a TCP connection to the device every 5 s (nothing is sent); if it cannot reach the device either, it is a field problem and nothing moves. Do not probe a gateway that takes only one client (RTU over TCP): choose none.
             Health is sent to the watchdog with the API token of this instance's settings.</p>
         </div>
+        <div class="card" style="margin-top: 16px">
+            <b>Per-server settings</b>
+            <p class="dim" style="margin: 6px 0 12px">Every server shares one configuration of an instance. A value bound to one machine — a licence key for its hardware id, a token — is set here per server; on that server the instance runs with it, and it never reaches the shared configuration (RFC-003 §2.9).
+            Secret values are never shown; an empty field keeps the value. Saving restarts the instance where it runs.
+            Needs <b style="display: inline">scada.js-controller</b> (core patch #6) on every server: the official js-controller ignores these values and uses the shared ones.</p>
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap">
+                <label>Instance <select id="ps-inst" aria-label="instance for per-server settings"></select></label>
+                <label>Add <select id="ps-add" aria-label="attribute to set per server"></select></label>
+                <button type="button" id="ps-addbtn">Add</button>
+            </div>
+            <div class="scroll" style="margin-top: 10px"><table><thead id="ps-head"></thead><tbody id="ps-rows"></tbody></table></div>
+            <div style="display: flex; gap: 8px; align-items: center; margin-top: 10px">
+                <button type="button" id="ps-save" class="primary">Save per-server settings</button>
+                <span id="ps-msg" class="dim"></span>
+            </div>
+        </div>
     </section>
 
     <section id="view-events" aria-label="Events and sync" hidden>
@@ -286,6 +302,7 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         socket.emit('subscribe', 'redundancy.*');
         draw();
         drawInstances();
+        await loadPerServer();
     }
 
     socket.on('connect', () => load().catch(e => notice(`cannot read the redundancy states: ${e.message}`, true)));
@@ -451,6 +468,123 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             ? issues.map(i => `<span class="${i.level === 'bad' ? 'badc' : 'meh'}">${esc(i.text)}</span>`).join('<br>') + cold
             : '<span class="good">ready</span>';
     }
+
+    // ── per-server settings (RFC-003 §2.9) ──────────────────────────────────────
+    let psOverrides = {};   // ns -> iobHost -> override object
+    let psExtra = [];       // attributes added in the form, not saved yet
+
+    /** Every override object, by instance and the iobroker host it belongs to. */
+    async function loadPerServer() {
+        const objs = Object.values((await call('getForeignObjects', 'system.redundancy.overrides.*', 'meta')) || {});
+        psOverrides = {};
+        const hosts = instances.map(i => i.host);
+        for (const o of objs) {
+            const ns = o._id.split('.').slice(-2).join('.');
+            const host = hosts.find(h => L.overrideId(h, ns) === o._id);
+            if (host) {
+                (psOverrides[ns] = psOverrides[ns] || {})[host] = o;
+            }
+        }
+        const sel = $('ps-inst');
+        const keep = sel.value;
+        sel.innerHTML = objects
+            .filter(o => !/^system\.adapter\.(redundancy|admin)\.\d+$/.test(o._id))
+            .map(o => o._id.replace(/^system\.adapter\./, ''))
+            .sort()
+            .map(id => `<option value="${esc(id)}">${esc(id)}${psOverrides[id] ? ' · per server' : ''}</option>`)
+            .join('');
+        if (keep) { sel.value = keep; }
+        drawPerServer();
+    }
+
+    function drawPerServer() {
+        const id = $('ps-inst').value;
+        const obj = objects.find(o => o._id === `system.adapter.${id}`) || {};
+        const ov = psOverrides[id] || {};
+        const list = L.servers(instances, states);
+        const hosts = instances.map(i => i.host);
+        const name = h => (list.find(x => x.iobHost === h) || {}).name || h;
+        const rows = L.perServerRows(obj, hosts, ov);
+        const fields = L.perServerFields(obj, ov);
+        for (const k of psExtra.filter(k => !rows.some(r => r.key === k))) {
+            const f = fields.find(x => x.key === k) || { key: k, secret: true };
+            rows.push({ key: k, secret: f.secret, values: Object.fromEntries(hosts.map(h => [h, { set: false, value: '' }])), missing: hosts.slice() });
+        }
+        $('ps-add').innerHTML = fields.filter(f => !rows.some(r => r.key === f.key))
+            .map(f => `<option value="${esc(f.key)}">${esc(f.key)}${f.secret ? ' (secret)' : ''}</option>`).join('')
+            || '<option value="">no more suggestions</option>';
+        $('ps-head').innerHTML = `<tr><th>Attribute</th>${hosts.map(h => `<th>${esc(name(h))} · ${esc(h)}</th>`).join('')}<th></th></tr>`;
+        $('ps-rows').innerHTML = rows.map(r => `<tr><td style="font-family: var(--mono)">${esc(r.key)}${r.secret ? ' <span class="dim">secret</span>' : ''}</td>
+            ${hosts.map(h => {
+                const v = r.values[h];
+                const ph = v.set ? (r.secret ? 'set — type to replace' : '') : 'not set: the shared value';
+                return `<td><input data-ps-host="${esc(h)}" data-ps-key="${esc(r.key)}" type="${r.secret ? 'password' : 'text'}" autocomplete="off" size="22"
+                    value="${r.secret ? '' : esc(v.value)}" placeholder="${esc(ph)}">
+                    ${v.set ? `<label class="dim" style="white-space: nowrap"><input type="checkbox" data-ps-remove="${esc(h)}:${esc(r.key)}"> remove</label>` : ''}</td>`;
+            }).join('')}
+            <td>${r.missing.length && r.missing.length < hosts.length ? `<span class="meh">not entered for ${esc(r.missing.map(name).join(', '))}</span>` : ''}</td></tr>`).join('')
+            || `<tr><td class="dim" colspan="${hosts.length + 2}">nothing set per server for ${esc(id || '—')}</td></tr>`;
+    }
+
+    async function savePerServer() {
+        const id = $('ps-inst').value;
+        const obj = objects.find(o => o._id === `system.adapter.${id}`) || {};
+        const encrypted = new Set(Array.isArray(obj.encryptedNative) ? obj.encryptedNative : []);
+        const form = { values: {}, remove: [] };
+        for (const el of document.querySelectorAll('[data-ps-host]')) {
+            const v = el.value;
+            if (v !== '' && !(el.type !== 'password' && v === el.defaultValue)) {
+                // the controller decrypts encryptedNative attributes only: those are stored encrypted
+                const stored = encrypted.has(el.dataset.psKey) ? await call('encrypt', v) : v;
+                (form.values[el.dataset.psHost] = form.values[el.dataset.psHost] || {})[el.dataset.psKey] = stored;
+            }
+        }
+        document.querySelectorAll('[data-ps-remove]:checked').forEach(c => form.remove.push(c.dataset.psRemove));
+        const patch = L.perServerPatch(form, psOverrides[id] || {});
+        const hosts = Object.keys(patch);
+        if (!hosts.length) {
+            $('ps-msg').textContent = 'nothing changed';
+            return;
+        }
+        for (const h of hosts) {
+            const oid = L.overrideId(h, id);
+            if (patch[h] === null) {
+                await call('delObject', oid);
+            } else {
+                await call('setObject', oid, {
+                    type: 'meta',
+                    common: { name: `${id} on ${h}`, type: 'hostOverride' },
+                    native: patch[h],
+                });
+            }
+        }
+        psExtra = [];
+        await loadPerServer();
+        // the instance reads them on start: restart it where it runs
+        const c = obj.common || {};
+        let restarted = '';
+        if (c.enabled && hosts.includes(c.host)) {
+            const code = await runOnHost(c.host, `iobroker restart ${id}`);
+            restarted = code === 0 ? `, ${id} restarted on ${c.host}` : `, restart on ${c.host} failed (${code}): restart it by hand`;
+        }
+        $('ps-msg').textContent = `saved for ${hosts.join(', ')}${restarted}`;
+    }
+
+    $('ps-inst').addEventListener('change', () => { psExtra = []; $('ps-msg').textContent = ''; drawPerServer(); });
+    $('ps-addbtn').addEventListener('click', () => {
+        const k = $('ps-add').value;
+        if (k && !psExtra.includes(k)) { psExtra.push(k); drawPerServer(); }
+    });
+    $('ps-save').addEventListener('click', async ev => {
+        ev.target.disabled = true;
+        try {
+            await savePerServer();
+        } catch (e) {
+            $('ps-msg').textContent = `per-server settings: ${e.message}`;
+        } finally {
+            ev.target.disabled = false;
+        }
+    });
 
     async function saveMode(id, mode) {
         let redundancy = { mode };

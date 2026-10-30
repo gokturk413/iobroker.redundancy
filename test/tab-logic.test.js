@@ -383,3 +383,42 @@ test('probe target: rockwell plcHost and prosoft tcpHost/tcpPort (the lab instan
     assert.strictEqual(L.suggestTarget({ connectionType: 'rtu_over_tcp', serialPort: 'COM5', tcpHost: '192.168.64.130', tcpPort: 1502 }, 'prosoft_flow'), '192.168.64.130:1502');
     assert.strictEqual(L.suggestTarget({ ip: '10.0.0.9' }, 'unknown'), '', 'no port known');
 });
+
+// ── per-server settings (RFC-003 §2.9) ───────────────────────────────────────
+const A = 'iobStansiya486';
+const B = 'iobStansiya486_b';
+
+test('per server: the same object id as the controller (scada core patch #6)', () => {
+    assert.strictEqual(L.overrideId(B, 'rockwell-enip.0'), 'system.redundancy.overrides.iobStansiya486_b.rockwell-enip.0');
+    assert.strictEqual(L.overrideId('plc.site a', 'mywebui.0'), 'system.redundancy.overrides.plc_site_a.mywebui.0');
+});
+
+test('per server: licence-like and encrypted attributes are suggested, the ones in use first', () => {
+    const obj = { native: { plcHost: '192.168.1.1', licenseKey: 'x', apiToken: 'y', pollInterval: 1000, nested: { key: 1 } }, encryptedNative: ['password'] };
+    const f = L.perServerFields(obj, { [B]: { native: { plcHost: '10.0.0.2' } } });
+    assert.deepStrictEqual(f.map(x => x.key), ['plcHost', 'apiToken', 'licenseKey', 'password']);
+    assert.deepStrictEqual(f.map(x => x.secret), [false, true, true, true]);
+    assert.deepStrictEqual(f.map(x => x.perServer), [true, false, false, false]);
+});
+
+test('per server: a secret is never shown, a server without a value is named', () => {
+    const obj = { native: { licenseKey: 'shared', plcHost: 'x' } };
+    const ov = { [A]: { native: { licenseKey: 'A-KEY', plcHost: '10.0.0.1' } }, [B]: { native: { plcHost: '10.0.0.2' } } };
+    const rows = L.perServerRows(obj, [A, B], ov);
+    const lic = rows.find(r => r.key === 'licenseKey');
+    assert.deepStrictEqual(lic.values[A], { set: true, value: '' });
+    assert.deepStrictEqual(lic.missing, [B]);
+    const ip = rows.find(r => r.key === 'plcHost');
+    assert.strictEqual(ip.values[B].value, '10.0.0.2');
+    assert.deepStrictEqual(ip.missing, []);
+});
+
+test('per server: empty means unchanged, removing the last value deletes the object', () => {
+    const ov = { [A]: { native: { licenseKey: 'A-KEY' } }, [B]: { native: { licenseKey: 'B-OLD', plcHost: 'x' } } };
+    assert.deepStrictEqual(L.perServerPatch({ values: { [A]: { licenseKey: '' }, [B]: { licenseKey: 'B-NEW' } } }, ov), {
+        [B]: { licenseKey: 'B-NEW', plcHost: 'x' },
+    });
+    assert.deepStrictEqual(L.perServerPatch({ remove: [`${A}:licenseKey`] }, ov), { [A]: null });
+    assert.deepStrictEqual(L.perServerPatch({ values: { [A]: { token: 't' } } }, {}), { [A]: { token: 't' } });
+    assert.deepStrictEqual(L.perServerPatch({ values: { [A]: { licenseKey: '' } } }, ov), {}, 'nothing typed, nothing written');
+});
