@@ -359,10 +359,10 @@ class Redundancy extends utils.Adapter {
         }
         if (event !== 'lease-error') {
             this.events = pushEvent(this.events, e, MAX_EVENTS);
-            this.setState('events', JSON.stringify(this.events), true);
+            this.guard('events', this.setStateAsync('events', JSON.stringify(this.events), true), 'debug');
         }
         if (event === 'switchover') {
-            this.setState('lastSwitch', JSON.stringify({ t, ...rest }), true);
+            this.guard('lastSwitch', this.setStateAsync('lastSwitch', JSON.stringify({ t, ...rest }), true), 'debug');
         }
     }
 
