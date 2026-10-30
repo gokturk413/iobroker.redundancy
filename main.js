@@ -60,9 +60,9 @@ class Redundancy extends utils.Adapter {
         this.trackers = new Map(); // id → {key, tracker, ts, alive}
         this.reach = new Map(); // id → this server's last probe
         this.on('ready', () => this.onReady());
-        this.on('stateChange', (id, state) => this.onStateChange(id, state));
+        this.on('stateChange', (id, state) => this.guard('command', this.onStateChange(id, state)));
         this.on('unload', cb => this.onUnload(cb));
-        this.on('message', obj => this.onMessage(obj));
+        this.on('message', obj => this.guard('message', this.onMessage(obj)));
     }
 
     async onReady() {
@@ -106,8 +106,8 @@ class Redundancy extends utils.Adapter {
             this.startApi(where);
             this.subscribeStates('control.*');
         }
-        this.timer = setInterval(() => this.poll(), POLL_MS);
-        this.poll();
+        this.timer = setInterval(() => this.guard('status', this.poll(), 'debug'), POLL_MS);
+        this.guard('status', this.poll(), 'debug');
         this.healthTimer = setInterval(() => this.healthTick(), HEALTH_MS);
     }
 
@@ -261,6 +261,15 @@ class Redundancy extends utils.Adapter {
         }
     }
 
+    /**
+     * A database call that fails while the Redis master changes ("Connection is closed",
+     * "Command aborted") is logged, never left as an unhandled rejection: that ended the
+     * adapter on every planned switch (lab, 2026-10-30) and froze its status for 30 s.
+     */
+    guard(what, promise, level = 'warn') {
+        return Promise.resolve(promise).catch(e => this.log[level](`${what}: ${e && e.message ? e.message : e}`));
+    }
+
     /** This host's node_modules (the folder this adapter is installed in). */
     installed() {
         return installedAdapters(path.join(__dirname, '..'));
@@ -336,7 +345,7 @@ class Redundancy extends utils.Adapter {
             this.log.info(text);
         }
         if (event === 'role') {
-            this.poll(); // the new role now, not up to a second later
+            this.guard('status', this.poll(), 'debug'); // the new role now, not up to a second later
         }
         if (event !== 'lease-error') {
             this.events = pushEvent(this.events, e, MAX_EVENTS);
