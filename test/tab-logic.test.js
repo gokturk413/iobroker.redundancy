@@ -319,6 +319,20 @@ test('the activation request of the pair is one file with every server request',
     assert.throws(() => L.activationBundle('h0-vm', [], 1), /no server/);
 });
 
+test('TLS: every server answered with the same CA, or what is missing', () => {
+    const reply = (ca, host) => ({ ca, host, names: [`192.168.64.${host === 'A' ? 11 : 12}`, 'localhost'], notAfter: 2_100_000_000, written: true, dir: '/etc/scada/tls', snippets: { valkeyConf: 'port 0' } });
+    const ok = L.tlsView([{ server: 'A', reply: reply('ca1', 'A') }, { server: 'B', reply: reply('ca1', 'B') }]);
+    assert.strictEqual(ok.allOk, true);
+    assert.strictEqual(ok.sameCa, true);
+    assert.strictEqual(ok.rows[0].notAfter, '2036-07-18');
+    assert.strictEqual(ok.rows[1].snippets.valkeyConf, 'port 0');
+    const other = L.tlsView([{ server: 'A', reply: reply('ca1', 'A') }, { server: 'B', reply: reply('ca2', 'B') }]);
+    assert.strictEqual(other.sameCa, false, 'another cluster key on B: not one CA');
+    const down = L.tlsView([{ server: 'A', reply: reply('ca1', 'A') }, { server: 'B', error: 'watchdog not running' }]);
+    assert.deepStrictEqual([down.allOk, down.sameCa, down.rows[1].error], [false, false, 'watchdog not running']);
+    assert.strictEqual(L.tlsView([]).allOk, false);
+});
+
 // ── instance health (RFC-003 §2.11) ──────────────────────────────────────────
 test('health form: the RFC defaults and a probe target from the instance settings', () => {
     const f = L.healthForm({ mode: 'cold', critical: true }, { ip: '192.168.1.1' }, 'rockwell-enip');

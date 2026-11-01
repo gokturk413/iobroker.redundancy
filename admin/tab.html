@@ -207,6 +207,17 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
                     <span id="lic-msg" class="dim"></span>
                 </div>
             </div>
+            <div class="card" style="grid-column: 1 / -1">
+                <b>Encryption (TLS)</b>
+                <p class="dim" style="margin: 6px 0 10px">Every connection of the pair (replication, Sentinel, ioBroker, watchdog) encrypted, and only for holders of a certificate of the pair. Each watchdog makes its server's certificate itself: the CA comes from the cluster key both servers share, nothing has to be copied. Then the lines below go into each server's configs and every server is restarted at the same time (a TLS-only server refuses plain clients). The compose stack does all of this by itself (tls-init).</p>
+                <div id="tls-summary" style="margin-bottom: 10px"></div>
+                <div class="scroll"><table><thead><tr><th>Server</th><th>CA</th><th>Valid until</th><th>Names</th><th>Folder</th></tr></thead><tbody id="tls-rows"></tbody></table></div>
+                <div id="tls-snippets"></div>
+                <div class="controls" style="margin-top: 12px">
+                    <button type="button" id="tls-prepare" class="primary">Prepare TLS on every server</button>
+                    <span id="tls-msg" class="dim"></span>
+                </div>
+            </div>
             <div class="card">
                 <b>Instance settings of each server</b>
                 <p class="dim" style="margin: 6px 0 8px">Status file, API and API token of each server's redundancy instance.</p>
@@ -920,6 +931,44 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         $('lic-msg').className = bad ? 'badc' : 'dim';
     }
 
+    function tlsMsg(text, bad) {
+        $('tls-msg').textContent = text || '';
+        $('tls-msg').className = bad ? 'badc' : 'dim';
+    }
+
+    /** Every server's watchdog makes its TLS files; the card shows them and each server's config lines. */
+    async function tlsPrepare() {
+        const list = L.servers(instances, states);
+        if (!list.length) { tlsMsg('no server known yet', true); return; }
+        const results = [];
+        for (const x of list) {
+            if (!x.connected) { results.push({ server: x.name, error: 'watchdog not running' }); continue; }
+            tlsMsg(`asking ${x.name}…`);
+            const r = await sendTo(x.instance, 'tls', { by: 'admin tab' }, 30000);
+            results.push(r.error ? { server: x.name, error: r.error } : { server: x.name, reply: r });
+        }
+        const v = L.tlsView(results);
+        $('tls-summary').innerHTML = v.sameCa
+            ? '<span class="good">every server has its certificate, all from the same CA</span>'
+            : v.allOk
+                ? '<span class="badc">the servers have different CAs: their cluster keys differ</span>'
+                : '<span class="meh">not every server answered</span>';
+        $('tls-rows').innerHTML = v.rows.map(r => r.ok
+            ? `<tr><td>${esc(r.name)}</td><td style="font-family: var(--mono)">${esc(r.ca)}…</td><td>${esc(r.notAfter)}</td>
+                <td style="font-size: 12px">${r.names.map(esc).join(', ')}</td><td style="font-family: var(--mono); font-size: 12px">${esc(r.dir)}</td></tr>`
+            : `<tr><td>${esc(r.name)}</td><td class="badc" colspan="4">${esc(r.error)}</td></tr>`).join('');
+        const block = (title, text) => `<div style="margin-top: 8px"><b>${esc(title)}</b>
+            <button type="button" class="tls-copy" data-text="${esc(text)}" style="margin-left: 8px">Copy</button>
+            <pre style="white-space: pre-wrap; font-family: var(--mono); font-size: 12px; margin: 6px 0">${esc(text)}</pre></div>`;
+        $('tls-snippets').innerHTML = v.rows.filter(r => r.ok).map(r => `<details style="margin-top: 12px"><summary><b>${esc(r.name)}</b>: the lines for its configs</summary>
+            ${block('valkey.conf (Valkey / Redis)', r.snippets.valkeyConf || '')}
+            ${block('sentinel.conf', r.snippets.sentinelConf || '')}
+            ${block('iobroker.json: objects.options and states.options', JSON.stringify((r.snippets.iobrokerJson || {})['objects.options'] || {}, null, 2))}
+            ${block('watchdog.json', JSON.stringify(r.snippets.watchdogJson || {}, null, 2))}
+            <ul class="dim" style="margin: 6px 0">${(r.snippets.notes || []).map(n => `<li>${esc(n)}</li>`).join('')}</ul></details>`).join('');
+        tlsMsg(v.sameCa ? `done (${v.rows.map(r => `${r.name}: ${r.written ? 'written' : 'already there'}`).join(', ')})` : '', !v.sameCa);
+    }
+
     /** Every server's activation request, bundled into one file to send to the vendor. */
     async function licenceRequest() {
         const list = L.servers(instances, states).filter(x => x.connected);
@@ -1023,6 +1072,22 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             $('hotdialog').close();
             await saveMode(hotFor, 'cold');
             hotFor = null;
+        } else if (b.id === 'tls-prepare') {
+            b.disabled = true;
+            try {
+                await tlsPrepare();
+            } catch (e) {
+                tlsMsg(e.message, true);
+            } finally {
+                b.disabled = false;
+            }
+        } else if (b.classList.contains('tls-copy')) {
+            try {
+                await navigator.clipboard.writeText(b.dataset.text || '');
+                tlsMsg('copied');
+            } catch (e) {
+                tlsMsg(`copy: ${e.message}`, true);
+            }
         } else if (b.id === 'lic-request' || b.id === 'lic-enter') {
             b.disabled = true;
             try {

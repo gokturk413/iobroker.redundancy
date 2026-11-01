@@ -539,6 +539,33 @@
         };
     }
 
+    /**
+     * The TLS card: what every server's watchdog answered to `tls` (its files, made from the
+     * cluster key). The pair can switch to TLS only when every server answered and all have the
+     * same CA (one cluster key).
+     */
+    function tlsView(results) {
+        const rows = results.map(({ server, reply, error }) => {
+            if (error || !reply) {
+                return { name: server, ok: false, error: error || 'no answer' };
+            }
+            return {
+                name: server,
+                ok: true,
+                ca: String(reply.ca || '').slice(0, 16),
+                caFull: String(reply.ca || ''),
+                notAfter: reply.notAfter ? new Date(reply.notAfter * 1000).toISOString().slice(0, 10) : '',
+                names: Array.isArray(reply.names) ? reply.names.map(String) : [],
+                written: !!reply.written,
+                dir: String(reply.dir || ''),
+                snippets: reply.snippets || {},
+            };
+        });
+        const cas = new Set(rows.filter(r => r.ok).map(r => r.caFull));
+        const allOk = rows.length > 0 && rows.every(r => r.ok);
+        return { rows, allOk, sameCa: allOk && cas.size === 1 };
+    }
+
     // ── instance health (RFC-003 §2.11, §2.11a); the adapter checks it again (lib/health.js) ──
     const HEALTH_DEFAULTS = { state: 'info.connection', badWhen: 'false', failures: 3, detectMs: 10000, recoverMs: 30000 };
     const BAD_WHEN = /^(false|true|(>=|<=|>|<|==|!=)\s*-?\d+(\.\d+)?)$/;
@@ -772,5 +799,5 @@
         return out;
     }
 
-    return { overrideId, perServerFields, perServerRows, perServerPatch, healthForm, healthPatch, signalText, healthNow, suggestTarget, licenceView, activationBundle, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES, HEALTH_DEFAULTS };
+    return { overrideId, perServerFields, perServerRows, perServerPatch, healthForm, healthPatch, signalText, healthNow, suggestTarget, licenceView, activationBundle, tlsView, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES, HEALTH_DEFAULTS };
 });

@@ -422,7 +422,7 @@ class Redundancy extends utils.Adapter {
             await this.onSyncMessage(obj, answer);
             return;
         }
-        if (obj && (obj.command === 'activation' || obj.command === 'licence')) {
+        if (obj && (obj.command === 'activation' || obj.command === 'licence' || obj.command === 'tls')) {
             await this.onLicenceMessage(obj, answer);
             return;
         }
@@ -538,6 +538,13 @@ class Redundancy extends utils.Adapter {
         let req;
         if (obj.command === 'activation') {
             req = { op: 'activation' };
+        } else if (obj.command === 'tls') {
+            // this server's TLS files (CA from the cluster key) and its config lines
+            if (!this.config.apiToken) {
+                answer({ error: 'set the watchdog API token in the settings of this instance first' });
+                return;
+            }
+            req = { op: 'tls', by, token: this.config.apiToken };
         } else {
             const key = obj.message && typeof obj.message.key === 'string' ? obj.message.key.trim() : null;
             if (key === null || key.length > 3500) {
@@ -555,6 +562,9 @@ class Redundancy extends utils.Adapter {
             if (reply.type === 'error') {
                 answer({ error: reply.error });
                 return;
+            }
+            if (obj.command === 'tls') {
+                this.log.info(`TLS files ${reply.written ? 'written' : 'checked'} by ${by}: CA ${String(reply.ca || '').slice(0, 16)}`);
             }
             if (obj.command === 'licence') {
                 this.log.info(`licence key ${req.key ? 'entered' : 'removed'} by ${by}: ${reply.state} (${reply.message})`);
