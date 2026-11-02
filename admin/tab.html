@@ -48,6 +48,7 @@ dl { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
 dt { color: var(--dim); }
 dd { margin: 2px 0 0; font-family: var(--mono); overflow-wrap: anywhere; }
 .good { color: var(--ok); } .meh { color: var(--warn); } .badc { color: var(--bad); }
+.banner { border: 1px solid var(--warn); border-radius: 8px; padding: 8px 12px; background: color-mix(in srgb, var(--warn) 10%, transparent); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; color: var(--dim); font-weight: 500; padding: 8px 12px 8px 0; }
 td { padding: 9px 12px 9px 0; border-top: 1px solid var(--line); vertical-align: top; }
@@ -82,6 +83,7 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         <a href="#servers" data-view="servers">Servers</a>
         <a href="#instances" data-view="instances">Instances</a>
         <a href="#events" data-view="events">Events &amp; sync</a>
+        <a href="#perserver" data-view="perserver">Per-server settings</a>
         <a href="#settings" data-view="settings">Settings</a>
     </nav>
     <div id="notice" class="msg" hidden></div>
@@ -115,8 +117,23 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             <b style="display: inline">alarm only</b>: an event, no switch. <b style="display: inline">Check B</b>: probe = the standby opens a TCP connection to the device every 5 s (nothing is sent); if it cannot reach the device either, it is a field problem and nothing moves. Do not probe a gateway that takes only one client (RTU over TCP): choose none.
             Health is sent to the watchdog with the API token of this instance's settings.</p>
         </div>
-        <div class="card" style="margin-top: 16px">
+    </section>
+
+    <section id="view-perserver" aria-label="Per-server settings" hidden>
+        <div class="card">
             <b>Per-server settings</b>
+            <p class="dim" style="margin: 6px 0 12px">An instance's settings are one object for every server. Licence keys are bound to each machine's hardware, so they must differ per server. Fields marked <b style="display: inline">per server</b> keep a separate value for each server; the instance gets the value of the server it runs on. Values are never shown; they are written to <span style="font-family: var(--mono)">system.redundancy.overrides.&lt;host&gt;.&lt;instance&gt;</span>. The instance's own settings dialog edits only the shared values.</p>
+            <div id="ps-warnings"></div>
+            <label class="dim" style="display: block; margin-bottom: 8px"><input type="checkbox" id="pso-all"> <span id="pso-all-text">Show every field that could be set per server</span></label>
+            <div class="scroll"><table><thead id="pso-head"></thead><tbody id="pso-rows"></tbody></table></div>
+            <div class="controls" style="margin-top: 12px">
+                <button type="button" id="pso-discard">Discard</button>
+                <button type="button" id="pso-save" class="primary">Save</button>
+                <span id="pso-msg" class="dim"></span>
+            </div>
+        </div>
+        <div class="card" id="ps-editor" style="margin-top: 16px">
+            <b>Values per server</b>
             <p class="dim" style="margin: 6px 0 12px">Every server shares one configuration of an instance. A value bound to one machine — a licence key for its hardware id, a token — is set here per server; on that server the instance runs with it, and it never reaches the shared configuration (RFC-003 §2.9).
             Secret values are never shown; an empty field keeps the value. Saving restarts the instance where it runs.
             Needs <b style="display: inline">scada.js-controller</b> (core patch #6) on every server: the official js-controller ignores these values and uses the shared ones.</p>
@@ -483,6 +500,8 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     // ── per-server settings (RFC-003 §2.9) ──────────────────────────────────────
     let psOverrides = {};   // ns -> iobHost -> override object
     let psExtra = [];       // attributes added in the form, not saved yet
+    let psLicence = {};     // ns -> the instance's licence is valid where it runs (info.licenseValid / licenseStatus)
+    let psStageOff = [];    // "ns|key": per server switched off in the overview, not saved yet
 
     /** Every override object, by instance and the iobroker host it belongs to. */
     async function loadPerServer() {
@@ -505,8 +524,108 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             .map(id => `<option value="${esc(id)}">${esc(id)}${psOverrides[id] ? ' · per server' : ''}</option>`)
             .join('');
         if (keep) { sel.value = keep; }
+        // the licence state of the instances that report one (where they run)
+        psLicence = {};
+        for (const pattern of ['*.info.licenseValid', '*.info.licenseStatus']) {
+            const got = (await call('getForeignStates', pattern).catch(() => null)) || {};
+            for (const [id, st] of Object.entries(got)) {
+                if (!st || st.val === null || st.val === undefined) { continue; }
+                const ns = id.split('.').slice(0, 2).join('.');
+                const valid = typeof st.val === 'boolean' ? st.val : /^(valid|licensed|ok)$/i.test(String(st.val));
+                if (!(ns in psLicence) || pattern.endsWith('licenseValid')) { psLicence[ns] = valid; }
+            }
+        }
         drawPerServer();
+        drawPerServerOverview();
     }
+
+    function psHosts() {
+        const list = L.servers(instances, states);
+        return instances.map(i => ({ host: i.host, name: (list.find(x => x.iobHost === i.host) || {}).name || i.host }));
+    }
+
+    function drawPerServerOverview() {
+        const hosts = psHosts();
+        const v = L.perServerOverview(objects, hosts, psOverrides, psLicence);
+        $('ps-warnings').innerHTML = v.warnings.map(w =>
+            `<div class="banner meh" style="margin-bottom: 8px">⚠ ${esc(w.text)}</div>`).join('');
+        $('pso-head').innerHTML = `<tr><th>Instance · field</th><th>Per server</th>${hosts.map(h => `<th>${esc(h.name)} · ${esc(h.host)}</th>`).join('')}<th>Why suggested</th></tr>`;
+        // by default what matters for a switch: set per server, or bound to the machine
+        const all = $('pso-all').checked;
+        const shown = all ? v.rows : v.rows.filter(r => r.perServer || r.machineBound);
+        $('pso-all-text').textContent = all
+            ? 'Show every field that could be set per server'
+            : `Show every field that could be set per server (${v.rows.length - shown.length} more: passwords, tokens, …)`;
+        let last = '';
+        $('pso-rows').innerHTML = shown.map(r => {
+            const off = psStageOff.includes(`${r.ns}|${r.key}`);
+            const first = r.ns !== last;
+            last = r.ns;
+            const cells = r.perServer
+                ? hosts.map(h => { const c = r.cells[h.host] || { level: 'bad', text: 'missing' }; return `<td class="${c.level === 'good' ? 'good' : 'badc'}">${esc(c.text)}</td>`; }).join('')
+                : `<td class="dim" colspan="${hosts.length}">${esc(r.shared)}</td>`;
+            return `<tr${off ? ' style="opacity: .5"' : ''}><td><b style="display: inline">${first ? esc(r.ns) : ''}</b> <span style="font-family: var(--mono)">${esc(r.key)}</span></td>
+                <td><input type="checkbox" data-pso="${esc(r.ns)}|${esc(r.key)}" ${r.perServer && !off ? 'checked' : ''} aria-label="${esc(r.ns)} ${esc(r.key)} per server"></td>
+                ${cells}<td class="dim">${esc(r.why)}</td></tr>`;
+        }).join('') || `<tr><td class="dim" colspan="${hosts.length + 3}">no instance has a field to set per server</td></tr>`;
+        $('pso-msg').textContent = psStageOff.length ? `${psStageOff.length} field(s) to stop setting per server: Save` : '';
+    }
+
+    $('pso-rows').addEventListener('change', ev => {
+        const box = ev.target.closest('[data-pso]');
+        if (!box) { return; }
+        const [ns, key] = box.dataset.pso.split('|');
+        const isPer = Object.values(psOverrides[ns] || {}).some(o => o && o.native && key in o.native);
+        if (box.checked && !isPer) {
+            // values are needed first: open the editor below with this field
+            $('ps-inst').value = ns;
+            psExtra = [key];
+            drawPerServer();
+            $('ps-msg').textContent = `enter ${key} for every server, then save the values`;
+            $('ps-editor').scrollIntoView({ behavior: 'smooth' });
+            box.checked = false;
+        } else if (!box.checked && isPer) {
+            psStageOff.push(`${ns}|${key}`);
+        } else if (box.checked && isPer) {
+            psStageOff = psStageOff.filter(x => x !== `${ns}|${key}`);
+        }
+        drawPerServerOverview();
+    });
+    $('pso-all').addEventListener('change', drawPerServerOverview);
+    $('pso-discard').addEventListener('click', () => { psStageOff = []; drawPerServerOverview(); });
+    $('pso-save').addEventListener('click', async ev => {
+        if (!psStageOff.length) { $('pso-msg').textContent = 'nothing changed'; return; }
+        if (!confirm(`Stop setting per server: ${psStageOff.map(x => x.replace('|', ' ')).join(', ')}? The values of every server are removed; the shared value applies again.`)) { return; }
+        ev.target.disabled = true;
+        const done = [];
+        try {
+            const byNs = {};
+            for (const x of psStageOff) { const [ns, key] = x.split('|'); (byNs[ns] = byNs[ns] || []).push(key); }
+            for (const [ns, keys] of Object.entries(byNs)) {
+                const ov = psOverrides[ns] || {};
+                const remove = Object.keys(ov).flatMap(h => keys.map(k => `${h}:${k}`));
+                const patch = L.perServerPatch({ values: {}, remove }, ov);
+                for (const [h, native] of Object.entries(patch)) {
+                    const oid = L.overrideId(h, ns);
+                    if (native === null) { await call('delObject', oid); } else { await call('setObject', oid, { type: 'meta', common: { name: `${ns} on ${h}`, type: 'hostOverride' }, native }); }
+                }
+                const c = ((objects.find(o => o._id === `system.adapter.${ns}`) || {}).common) || {};
+                if (c.enabled && Object.keys(patch).includes(c.host)) {
+                    const code = await runOnHost(c.host, `iobroker restart ${ns}`);
+                    done.push(code === 0 ? `${ns} restarted on ${c.host}` : `${ns}: restart on ${c.host} failed (${code})`);
+                } else {
+                    done.push(ns);
+                }
+            }
+            psStageOff = [];
+            await loadPerServer();
+            $('pso-msg').textContent = `saved: ${done.join(', ')}`;
+        } catch (e) {
+            $('pso-msg').textContent = `per-server settings: ${e.message}`;
+        } finally {
+            ev.target.disabled = false;
+        }
+    });
 
     function drawPerServer() {
         const id = $('ps-inst').value;
@@ -669,8 +788,11 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         for (const a of document.querySelectorAll('nav a')) {
             if (a.dataset.view === view) { a.setAttribute('aria-current', 'page'); } else { a.removeAttribute('aria-current'); }
         }
-        for (const v of ['servers', 'instances', 'events', 'settings']) {
+        for (const v of ['servers', 'instances', 'events', 'perserver', 'settings']) {
             $(`view-${v}`).hidden = v !== view;
+        }
+        if (view === 'perserver') {
+            drawPerServerOverview();
         }
     }
     window.addEventListener('hashchange', show);

@@ -769,6 +769,114 @@
             });
     }
 
+    /** A licence key: issued for one machine's hardware id, so it can only be right on one server. */
+    const LICENCE_KEY = /^licen[cs]e$|licen[cs]e_?key|^key$|hwid|hardware_?id|serial/i;
+    /** A certificate of this machine (the web adapters' certificate names). */
+    const HOST_CERT = /^cert(Public|Private|Chained)$/;
+
+    /** Bound to the machine (a licence key, a certificate in use): different on every server. */
+    function machineBound(key, value) {
+        return LICENCE_KEY.test(key) || (HOST_CERT.test(key) && value !== undefined && value !== '');
+    }
+
+    /** Why an attribute is offered per server (the mockup's "Why suggested"). */
+    function perServerWhy(obj, key, perServer) {
+        if (perServer) {
+            return 'set per server';
+        }
+        if (LICENCE_KEY.test(key)) {
+            return 'licence key: bound to the machine';
+        }
+        if (HOST_CERT.test(key)) {
+            return 'certificate of the machine';
+        }
+        const o = obj || {};
+        if (Array.isArray(o.encryptedNative) && o.encryptedNative.includes(key)) {
+            return 'in encryptedNative';
+        }
+        if (Array.isArray(o.protectedNative) && o.protectedNative.includes(key)) {
+            return 'in protectedNative';
+        }
+        const m = String(key).match(PER_SERVER_NAME);
+        return m ? `name contains "${m[0].toLowerCase().replace(/licence/, 'license')}"` : '';
+    }
+
+    /**
+     * The overview of the per-server tab: every instance's attributes that may be set per server,
+     * what each server has, why it is offered, and what is missing for a switch.
+     *
+     * @param {object[]} objs system.adapter.<ns> objects
+     * @param {{host: string, name: string}[]} hosts the servers (iobroker host, display name)
+     * @param {Record<string, Record<string, object>>} overrides ns → host → override object
+     * @param {Record<string, boolean>} licenceValid ns → the instance's licence is valid where it runs
+     */
+    function perServerOverview(objs, hosts, overrides, licenceValid) {
+        const rows = [];
+        const warnings = [];
+        const sharedKeys = [];
+        for (const obj of objs || []) {
+            const ns = String(obj._id || '').replace(/^system\.adapter\./, '');
+            if (!ns || /^(redundancy|admin)\.\d+$/.test(ns)) {
+                continue;
+            }
+            const ov = (overrides || {})[ns] || {};
+            const runsOn = (obj.common || {}).host;
+            const encrypted = new Set(Array.isArray(obj.encryptedNative) ? obj.encryptedNative : []);
+            for (const f of perServerFields(obj, ov)) {
+                const licence = /licen[cs]e/i.test(f.key);
+                const cells = {};
+                const missing = [];
+                if (f.perServer) {
+                    for (const { host } of hosts) {
+                        const n = (ov[host] && ov[host].native) || {};
+                        const set = Object.prototype.hasOwnProperty.call(n, f.key);
+                        let text = set ? 'set' : 'missing';
+                        if (set && licence && host === runsOn && licenceValid && ns in licenceValid) {
+                            text += licenceValid[ns] ? ' · valid' : ' · not valid';
+                        }
+                        cells[host] = { level: !set || text.endsWith('not valid') ? 'bad' : 'good', text };
+                        if (!set) {
+                            missing.push(host);
+                        }
+                    }
+                }
+                let shared = '';
+                if (!f.perServer) {
+                    const v = (obj.native || {})[f.key];
+                    shared = encrypted.has(f.key)
+                        ? 'shared by all servers (encrypted)'
+                        : v !== undefined && v !== '' ? 'shared by all servers' : 'not set';
+                }
+                const value = (obj.native || {})[f.key];
+                const bound = machineBound(f.key, value);
+                rows.push({ ns, key: f.key, perServer: f.perServer, secret: f.secret, machineBound: bound, licence: LICENCE_KEY.test(f.key), why: perServerWhy(obj, f.key, f.perServer), cells, shared, missing });
+                if (!f.perServer && LICENCE_KEY.test(f.key) && typeof value === 'string' && value.trim() !== '' && hosts.length > 1) {
+                    sharedKeys.push({ ns, key: f.key });
+                }
+                if (f.perServer && missing.length) {
+                    const names = missing.map(h => (hosts.find(x => x.host === h) || {}).name || h);
+                    warnings.push({
+                        ns,
+                        key: f.key,
+                        text: `${ns} has no ${f.key} for ${names.join(', ')}.${licence ? ' After a switch it would run there without its licence (trial, or stopped).' : ' After a switch it would use the shared value there.'}`,
+                    });
+                }
+            }
+        }
+        if (sharedKeys.length) {
+            const list = sharedKeys.map(k => `${k.ns} ${k.key}`).join(', ');
+            warnings.unshift({
+                ns: sharedKeys.map(k => k.ns).join(', '),
+                key: sharedKeys.map(k => k.key).join(', '),
+                text: `${sharedKeys.length === 1 ? 'One licence key is' : `${sharedKeys.length} licence keys are`} shared by every server: ${list}. A licence key fits only the machine it was issued for: set a key for each server, or after a switch the instance runs there without its licence.`,
+            });
+        }
+        // per server first, then licence keys, then certificates in use, then the other candidates
+        const rank = r => (r.perServer ? 0 : r.licence ? 1 : r.machineBound ? 2 : 3);
+        rows.sort((a, b) => rank(a) - rank(b) || a.ns.localeCompare(b.ns, undefined, { numeric: true }));
+        return { rows, warnings };
+    }
+
     /**
      * The form (host → attribute → typed value, '' = unchanged; `remove` lists host:key pairs)
      * against the current overrides → the native to write per host (null: delete the object).
@@ -799,5 +907,5 @@
         return out;
     }
 
-    return { overrideId, perServerFields, perServerRows, perServerPatch, healthForm, healthPatch, signalText, healthNow, suggestTarget, licenceView, activationBundle, tlsView, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES, HEALTH_DEFAULTS };
+    return { overrideId, perServerFields, perServerRows, perServerPatch, perServerOverview, healthForm, healthPatch, signalText, healthNow, suggestTarget, licenceView, activationBundle, tlsView, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES, HEALTH_DEFAULTS };
 });

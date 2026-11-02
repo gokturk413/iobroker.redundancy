@@ -319,6 +319,61 @@ test('the activation request of the pair is one file with every server request',
     assert.throws(() => L.activationBundle('h0-vm', [], 1), /no server/);
 });
 
+test("per-server overview: every instance's candidates, each server's state, why, and what is missing", () => {
+    const objs = [
+        { _id: 'system.adapter.mywebui.0', common: { host: 'hA' }, native: { licenseKey: '', port: 8082 } },
+        { _id: 'system.adapter.prosoft_flow.0', common: { host: 'hA' }, native: { licenseKey: 'x' } },
+        { _id: 'system.adapter.influxdb.0', common: { host: 'hA' }, native: { token: 'enc' }, encryptedNative: ['token'] },
+        { _id: 'system.adapter.web.0', common: { host: 'hA' }, native: { port: 8082 } },
+        { _id: 'system.adapter.redundancy.0', common: { host: 'hA' }, native: { apiToken: 't' } },
+    ];
+    const hosts = [{ host: 'hA', name: 'A' }, { host: 'hB', name: 'B' }];
+    const ov = {
+        'mywebui.0': { hA: { native: { licenseKey: 'a' } }, hB: { native: { licenseKey: 'b' } } },
+        'prosoft_flow.0': { hA: { native: { licenseKey: 'a' } } },
+    };
+    const v = L.perServerOverview(objs, hosts, ov, { 'mywebui.0': true, 'prosoft_flow.0': false });
+    const row = (ns, key) => v.rows.find(r => r.ns === ns && r.key === key);
+    assert.deepStrictEqual(row('mywebui.0', 'licenseKey').cells, { hA: { level: 'good', text: 'set · valid' }, hB: { level: 'good', text: 'set' } });
+    assert.strictEqual(row('mywebui.0', 'licenseKey').why, 'set per server');
+    assert.deepStrictEqual(row('prosoft_flow.0', 'licenseKey').missing, ['hB']);
+    assert.strictEqual(row('prosoft_flow.0', 'licenseKey').cells.hA.text, 'set · not valid');
+    assert.strictEqual(row('influxdb.0', 'token').shared, 'shared by all servers (encrypted)');
+    assert.strictEqual(row('influxdb.0', 'token').why, 'in encryptedNative');
+    assert.ok(!v.rows.some(r => r.ns === 'web.0'), 'nothing to offer for web.0');
+    assert.ok(!v.rows.some(r => r.ns === 'redundancy.0'), 'not the redundancy instances');
+    assert.deepStrictEqual(v.warnings.map(w => w.ns), ['prosoft_flow.0']);
+    assert.match(v.warnings[0].text, /prosoft_flow\.0 has no licenseKey for B\. After a switch it would run there without its licence/);
+    assert.deepStrictEqual(v.rows.map(r => r.ns).slice(0, 2), ['mywebui.0', 'prosoft_flow.0'], 'per server first');
+});
+
+test('per-server overview: a licence key shared by every server is a warning; machine-bound fields first', () => {
+    const objs = [
+        { _id: 'system.adapter.backitup.0', common: { host: 'hA' }, native: { ftpPassword: 'p' }, encryptedNative: ['ftpPassword'] },
+        { _id: 'system.adapter.rockwell-enip.0', common: { host: 'hA' }, native: { licenseKey: 'KEY-A', licenseTimeSource: 'ntp' } },
+        { _id: 'system.adapter.web.0', common: { host: 'hA' }, native: { certPublic: 'defaultPublic', certPrivate: 'defaultPrivate' } },
+    ];
+    const hosts = [{ host: 'hA', name: 'A' }, { host: 'hB', name: 'B' }];
+    const v = L.perServerOverview(objs, hosts, {}, {});
+    assert.deepStrictEqual(v.warnings.map(w => `${w.ns} ${w.key}`), ['rockwell-enip.0 licenseKey']);
+    assert.match(v.warnings[0].text, /^One licence key is shared by every server: rockwell-enip\.0 licenseKey\. A licence key fits only the machine it was issued for/);
+    const two = L.perServerOverview([...objs, { _id: 'system.adapter.mywebui.0', common: {}, native: { licenseKey: 'K' } }], hosts, {}, {});
+    assert.strictEqual(two.warnings.length, 1, 'one warning for every shared key');
+    assert.match(two.warnings[0].text, /^2 licence keys are shared by every server: (mywebui\.0|rockwell-enip\.0) licenseKey, /);
+    const order = v.rows.map(r => `${r.ns} ${r.key}`);
+    assert.ok(order.indexOf('rockwell-enip.0 licenseKey') < order.indexOf('backitup.0 ftpPassword'));
+    assert.ok(order.indexOf('web.0 certPublic') < order.indexOf('backitup.0 ftpPassword'));
+    const row = k => v.rows.find(r => `${r.ns} ${r.key}` === k);
+    assert.strictEqual(row('rockwell-enip.0 licenseKey').why, 'licence key: bound to the machine');
+    assert.strictEqual(row('rockwell-enip.0 licenseKey').machineBound, true);
+    assert.strictEqual(row('rockwell-enip.0 licenseTimeSource').machineBound, false, 'a licence setting is not a key');
+    assert.strictEqual(row('backitup.0 ftpPassword').machineBound, false);
+    assert.deepStrictEqual(L.perServerOverview(objs, [{ host: 'hA', name: 'A' }], {}, {}).warnings, [], 'one server: nothing to warn');
+    assert.ok(order.indexOf('rockwell-enip.0 licenseKey') < order.indexOf('web.0 certPublic'), 'licence keys before certificates');
+    const empty = L.perServerOverview([{ _id: 'system.adapter.opcua.0', common: {}, native: { certPublic: '' } }], hosts, {}, {});
+    assert.strictEqual(empty.rows[0].machineBound, false, 'an empty certificate field is no certificate in use');
+});
+
 test('TLS: every server answered with the same CA, or what is missing', () => {
     const reply = (ca, host) => ({ ca, host, names: [`192.168.64.${host === 'A' ? 11 : 12}`, 'localhost'], notAfter: 2_100_000_000, written: true, dir: '/etc/scada/tls', snippets: { valkeyConf: 'port 0' } });
     const ok = L.tlsView([{ server: 'A', reply: reply('ca1', 'A') }, { server: 'B', reply: reply('ca1', 'B') }]);
