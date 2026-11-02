@@ -356,7 +356,9 @@ test('per-server overview: a licence key shared by every server is a warning; ma
     const hosts = [{ host: 'hA', name: 'A' }, { host: 'hB', name: 'B' }];
     const v = L.perServerOverview(objs, hosts, {}, {});
     assert.deepStrictEqual(v.warnings.map(w => `${w.ns} ${w.key}`), ['rockwell-enip.0 licenseKey']);
-    assert.match(v.warnings[0].text, /^One licence key is shared by every server: rockwell-enip\.0 licenseKey\. A licence key fits only the machine it was issued for/);
+    assert.match(v.warnings[0].text, /^One licence key is shared by every server: rockwell-enip\.0 licenseKey\. A licence key fits only the machines it was issued for: it must list the hardware id of every server \(a cluster key/);
+    const valid = L.perServerOverview(objs, hosts, {}, { 'rockwell-enip.0': true });
+    assert.strictEqual(valid.rows.find(r => r.ns === 'rockwell-enip.0' && r.key === 'licenseKey').shared, 'shared by all servers · valid on A');
     const two = L.perServerOverview([...objs, { _id: 'system.adapter.mywebui.0', common: {}, native: { licenseKey: 'K' } }], hosts, {}, {});
     assert.strictEqual(two.warnings.length, 1, 'one warning for every shared key');
     assert.match(two.warnings[0].text, /^2 licence keys are shared by every server: (mywebui\.0|rockwell-enip\.0) licenseKey, /);

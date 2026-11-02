@@ -846,6 +846,11 @@
                     shared = encrypted.has(f.key)
                         ? 'shared by all servers (encrypted)'
                         : v !== undefined && v !== '' ? 'shared by all servers' : 'not set';
+                    // a licence key: is it valid on the server the instance runs on now
+                    if (licence && v && licenceValid && ns in licenceValid && runsOn) {
+                        const name = (hosts.find(h => h.host === runsOn) || {}).name || runsOn;
+                        shared += licenceValid[ns] ? ` · valid on ${name}` : ` · not valid on ${name}`;
+                    }
                 }
                 const value = (obj.native || {})[f.key];
                 const bound = machineBound(f.key, value);
@@ -868,7 +873,7 @@
             warnings.unshift({
                 ns: sharedKeys.map(k => k.ns).join(', '),
                 key: sharedKeys.map(k => k.key).join(', '),
-                text: `${sharedKeys.length === 1 ? 'One licence key is' : `${sharedKeys.length} licence keys are`} shared by every server: ${list}. A licence key fits only the machine it was issued for: set a key for each server, or after a switch the instance runs there without its licence.`,
+                text: `${sharedKeys.length === 1 ? 'One licence key is' : `${sharedKeys.length} licence keys are`} shared by every server: ${list}. A licence key fits only the machines it was issued for: it must list the hardware id of every server (a cluster key: one key for the whole cluster, request it with every server's hardware id), or set a key per server. Otherwise, after a switch the instance runs there without its licence.`,
             });
         }
         // per server first, then licence keys, then certificates in use, then the other candidates
