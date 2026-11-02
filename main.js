@@ -47,6 +47,7 @@ class Redundancy extends utils.Adapter {
         super({ ...options, name: 'redundancy' });
         this.timer = null;
         this.last = {};
+        this.role = '';
         this.addon = null;
         this.moving = false;
         this.lastReconcile = 0;
@@ -153,7 +154,7 @@ class Redundancy extends utils.Adapter {
                 h.listedAt = now;
                 await this.healthList();
             }
-            const primary = this.last.role === 'primary';
+            const primary = this.role === 'primary';
             if (primary) {
                 this.reach.clear();
             } else if (now - h.probedAt >= PROBE_MS) {
@@ -195,7 +196,7 @@ class Redundancy extends utils.Adapter {
             }
             if (now - h.reportedAt >= REPORT_MS) {
                 h.reportedAt = now;
-                await this.setStateAsync('health', JSON.stringify({ t: now, host: this.host, role: this.last.role || '', ...sum }), true);
+                await this.setStateAsync('health', JSON.stringify({ t: now, host: this.host, role: this.role || '', ...sum }), true);
                 await this.reportHealth(sum);
             }
         } catch (e) {
@@ -608,10 +609,20 @@ class Redundancy extends utils.Adapter {
         // moves act on the status file too: only the watchdog can write its folder, while
         // a socket or pipe name could be taken by someone else
         this.fileRole = statusToStates(file, now).role;
+        this.role = states.role;
+        // a write while the Redis master changes can be lost: after a switch every state is
+        // written again, and a value counts as written only once the write went through
+        if (states.primary !== this.last.primary) {
+            this.last = {};
+        }
         for (const [id, val] of Object.entries(states)) {
             if (this.last[id] !== val) {
-                this.last[id] = val;
-                await this.setStateAsync(id, val, true);
+                try {
+                    await this.setStateAsync(id, val, true);
+                    this.last[id] = val;
+                } catch (e) {
+                    this.log.debug(`${id} not written yet: ${e.message}`);
+                }
             }
         }
         this.maybeReconcile(states);
