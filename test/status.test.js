@@ -29,6 +29,18 @@ test('a fresh status file gives the role, master, epoch and peer', () => {
     assert.strictEqual(statusToStates({ ...fresh, maintenanceUntil: 1793034074471 }, fresh.t).maintenanceUntil, 1793034074471);
 });
 
+test('the cluster address: as the status file has it, only its four fields; none without a VIP', () => {
+    const vip = { address: '192.168.64.10/24', interface: 'ens33', held: true, error: null, extra: 1 };
+    assert.strictEqual(
+        statusToStates({ ...fresh, vip }, fresh.t).vip,
+        '{"address":"192.168.64.10/24","interface":"ens33","held":true,"error":null}',
+    );
+    const failing = { address: '192.168.64.10/24', interface: 'ens33', held: null, error: 'Operation not permitted' };
+    assert.strictEqual(JSON.parse(statusToStates({ ...fresh, vip: failing }, fresh.t).vip).error, 'Operation not permitted');
+    assert.strictEqual('vip' in statusToStates(fresh, fresh.t), false, 'no VIP configured: the state is not written');
+    assert.strictEqual('vip' in statusToStates({ ...fresh, vip: null }, fresh.t), false);
+});
+
 test('a stale or missing status means the watchdog is not running', () => {
     // the watchdog writes it every 250 ms; a host whose watchdog stopped is offline
     const old = statusToStates(fresh, fresh.t + STALE_MS + 1);

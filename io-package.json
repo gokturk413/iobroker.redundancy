@@ -332,6 +332,19 @@
       "native": {}
     },
     {
+      "_id": "vip",
+      "type": "state",
+      "common": {
+        "role": "json",
+        "name": "Cluster address (VIP) of this host as the watchdog reports it: {address, interface, held, error} (JSON)",
+        "type": "string",
+        "read": true,
+        "write": false,
+        "def": "null"
+      },
+      "native": {}
+    },
+    {
       "_id": "watchdogConfig",
       "type": "state",
       "common": {
