@@ -164,6 +164,11 @@ test('an instance object becomes what planMoves reads; an unknown mode counts as
     assert.strictEqual(instanceFromObject({ _id: 'system.adapter.x.0', common: {} }), null, 'no host');
 });
 
+test('a web extension is never moved: it runs inside its web instance, a move would restart that', () => {
+    const o = { _id: 'system.adapter.simple-api.0', common: { host: A, enabled: true, redundancy: { mode: 'cold' } }, native: { webInstance: '*' } };
+    assert.strictEqual(instanceFromObject(o).mode, 'none');
+});
+
 test('a hot instance runs on every server (H3): it is passed on as hot, so it is never moved', () => {
     const o = { _id: 'system.adapter.web.0', common: { host: A, enabled: true, redundancy: { mode: 'hot' } } };
     assert.strictEqual(instanceFromObject(o).mode, 'hot');
