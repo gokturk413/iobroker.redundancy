@@ -131,7 +131,11 @@ class Redundancy extends utils.Adapter {
                 id: o._id.replace(/^system\.adapter\./, ''),
                 // a web extension (native.webInstance) ends itself and runs inside its web
                 // instance: it is never alive, its health is the web instance's (lab 2026-11-03)
-                here: o.common.host === this.host && o.common.enabled === true && !webExtension(o),
+                // a hot instance runs on every server: the primary watches the copy that acts
+                here:
+                    (o.common.redundancy.mode === 'hot' ? this.role === 'primary' : o.common.host === this.host) &&
+                    o.common.enabled === true &&
+                    !webExtension(o),
                 cfg: healthConfig(o.common.redundancy),
             }));
         this.health.others = objs

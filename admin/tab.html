@@ -109,7 +109,7 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         <div class="card">
             <b>Which instances follow the primary</b>
             <p class="dim" style="margin: 6px 0 12px"><b style="display: inline">cold</b>: runs only on the primary; on a switch it moves there and starts (any adapter, a few seconds).
-            <b style="display: inline">hot</b>: runs on every server, only the primary writes; the adapter must hold back on the standby (its io-package says <code>common.redundancy.hot</code>). Until the hosts can run one instance on every server (H3), a hot instance moves like a cold one.
+            <b style="display: inline">hot</b>: runs on every server at once, so a switch does not wait for it to start; only the copy on the primary writes, gets commands and messages (the scada js-controller holds the others back). Needs the scada js-controller on every server and the watchdog status file in iobroker.json (<code>system.redundancy.statusFile</code>).
             <b style="display: inline">none</b>: stays on its host. Every instance that listens on its own port (web, ws, mqtt, OPC UA, …) must follow the primary, so clients reach it at the cluster address after a switch; an adapter with an instance on every server (admin) already is there. A serial line or RTU over TCP takes only one master: keep such an instance cold. Saving a mode restarts that instance.</p>
             <div id="net-warnings"></div>
             <div class="scroll"><table><thead><tr><th>Instance</th><th>Runs on</th><th>Mode</th><th>On failure</th><th>Critical</th><th>Health signal</th><th>Check B before switching</th><th></th><th>Other server</th><th>Now</th></tr></thead><tbody id="instances"></tbody></table></div>

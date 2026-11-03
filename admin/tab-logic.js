@@ -226,7 +226,7 @@
             });
         }
         if (!row.hotDeclared) {
-            out.push({ level: 'warn', text: `${row.adapter} does not declare hot support: it may write to the device from both servers.` });
+            out.push({ level: 'warn', text: `${row.adapter} does not declare hot support: the standby's copy writes nothing to the database and gets no commands, but its own device traffic (polling, writes from its own logic) runs on every server.` });
         }
         return out;
     }
@@ -306,7 +306,7 @@
      * server of the pair (its installed adapters, from installedAdapters).
      */
     function readiness(row, list) {
-        // hot moves like cold until the hosts can run it on every server (H3)
+        // cold starts there on a switch, hot runs there all the time: both need the adapter there
         if (row.mode !== 'cold' && row.mode !== 'hot') {
             return [];
         }
