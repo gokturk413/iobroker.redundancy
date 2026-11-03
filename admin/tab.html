@@ -110,7 +110,8 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             <b>Which instances follow the primary</b>
             <p class="dim" style="margin: 6px 0 12px"><b style="display: inline">cold</b>: runs only on the primary; on a switch it moves there and starts (any adapter, a few seconds).
             <b style="display: inline">hot</b>: runs on every server, only the primary writes; the adapter must hold back on the standby (its io-package says <code>common.redundancy.hot</code>). Until the hosts can run one instance on every server (H3), a hot instance moves like a cold one.
-            <b style="display: inline">none</b>: stays on its host (admin, web, …). A serial line or RTU over TCP takes only one master: keep such an instance cold. Saving a mode restarts that instance.</p>
+            <b style="display: inline">none</b>: stays on its host. Every instance that listens on its own port (web, ws, mqtt, OPC UA, …) must follow the primary, so clients reach it at the cluster address after a switch; an adapter with an instance on every server (admin) already is there. A serial line or RTU over TCP takes only one master: keep such an instance cold. Saving a mode restarts that instance.</p>
+            <div id="net-warnings"></div>
             <div class="scroll"><table><thead><tr><th>Instance</th><th>Runs on</th><th>Mode</th><th>On failure</th><th>Critical</th><th>Health signal</th><th>Check B before switching</th><th></th><th>Other server</th><th>Now</th></tr></thead><tbody id="instances"></tbody></table></div>
             <p class="dim" style="margin: 12px 0 0">A <b style="display: inline">critical</b> instance fails when its health signal stays bad (N readings in a row, or for the detect time) or it is not alive; it counts as recovered only after the recover time of good.
             <b style="display: inline">move whole primary</b>: when 2 critical instances fail on the primary (RFC-003 §2.11a), its watchdog switches to the standby — only if the standby checked out, outside the 60 s hold, at most 2 an hour, never under the maintenance lock, never to a server in a worse state.
@@ -423,6 +424,8 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
     /** Only on load and after a save: a redraw on every state change would undo a choice not saved yet. */
     function drawInstances() {
         rows = L.instanceRows(objects);
+        $('net-warnings').innerHTML = L.networkServices(objects, L.servers(instances, states)).map(w =>
+            `<div class="banner meh" style="margin-bottom: 8px">⚠ ${esc(w.text)}</div>`).join('');
         $('instances').innerHTML = rows.map(r => {
             const o = objects.find(x => x._id === `system.adapter.${r.id}`) || {};
             const f = L.healthForm((o.common || {}).redundancy, o.native, r.adapter);

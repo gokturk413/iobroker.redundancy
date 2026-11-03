@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { parseBadWhen, parseTarget, healthConfig, Tracker, summarize, DEFAULTS } = require('../lib/health');
+const { parseBadWhen, parseTarget, healthConfig, Tracker, summarize, DEFAULTS, webExtension } = require('../lib/health');
 
 test('badWhen: false, true and number comparisons only, never code', () => {
     assert.strictEqual(parseBadWhen('false')(false), true);
@@ -134,4 +134,12 @@ test('probe: an open port answers, a closed one does not', async () => {
     assert.strictEqual(await tcpProbe({ host: '127.0.0.1', port }), true);
     await new Promise(r => server.close(r));
     assert.strictEqual(await tcpProbe({ host: '127.0.0.1', port }, 1000), false);
+});
+
+test('a web extension is not watched for alive: it runs inside its web instance', () => {
+    assert.strictEqual(webExtension({ native: { webInstance: '*', port: 8087 } }), true);
+    assert.strictEqual(webExtension({ native: { webInstance: 'web.0' } }), true);
+    assert.strictEqual(webExtension({ native: { webInstance: '', port: 8087 } }), false);
+    assert.strictEqual(webExtension({ native: { port: 8082 } }), false);
+    assert.strictEqual(webExtension({}), false);
 });

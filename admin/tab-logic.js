@@ -254,6 +254,53 @@
             .sort((a, b) => a.id.localeCompare(b.id));
     }
 
+    /** Servers that have no bind setting but listen on their port. */
+    const PORT_SERVERS = ['opcua'];
+
+    /**
+     * Every instance that listens on its own port must be reachable at the cluster address after
+     * a switch (Kamran 2026-11-03): it follows the primary (cold, or hot) and listens on every
+     * address, not on one server's own. An adapter with an instance on every server (admin) is
+     * fine as it is; a web extension (native.webInstance) is served by its web instance; a port
+     * without a bind setting is a client's server port (influxdb), except for PORT_SERVERS.
+     *
+     * @param {object[]} objects system.adapter.<ns> objects
+     * @param {object[]} list servers(…): their iobroker hosts and watchdog configs
+     */
+    function networkServices(objects, list) {
+        const hosts = (list || []).map(s => s.iobHost);
+        const ownIps = new Set(
+            (list || []).flatMap(s => ((s.config || {}).hosts || []).map(h => String(h.redis || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, ''))),
+        );
+        const onEveryServer = adapter =>
+            hosts.length > 1 &&
+            hosts.every(h => objects.some(o => o && o._id && o._id.replace(/^system\.adapter\./, '').replace(/\.\d+$/, '') === adapter && (o.common || {}).host === h));
+        const out = [];
+        for (const r of instanceRows(objects)) {
+            const o = objects.find(x => x && x._id === `system.adapter.${r.id}`) || {};
+            const n = o.native || {};
+            const port = Number(n.port);
+            const listens = port > 0 && (Object.prototype.hasOwnProperty.call(n, 'bind') || PORT_SERVERS.includes(r.adapter));
+            if (!listens || (typeof n.webInstance === 'string' && n.webInstance !== '') || onEveryServer(r.adapter)) {
+                continue;
+            }
+            if (r.mode === 'none') {
+                out.push({
+                    id: r.id,
+                    kind: 'stays',
+                    text: `${r.id} listens on port ${port} but stays on ${r.host}${r.enabled ? '' : ' (disabled; it would start there when enabled)'}: after a switch it is not at the cluster address. Set its mode to cold (it moves with the primary) or hot.`,
+                });
+            } else if (ownIps.has(String(n.bind))) {
+                out.push({
+                    id: r.id,
+                    kind: 'bind',
+                    text: `${r.id} listens only on ${n.bind}, an address of one server: on another server it cannot start, and the cluster address does not reach it. Bind it to 0.0.0.0.`,
+                });
+            }
+        }
+        return out.sort((a, b) => a.id.localeCompare(b.id));
+    }
+
     /**
      * Where a cold instance could not start, or would start on another version: every other
      * server of the pair (its installed adapters, from installedAdapters).
@@ -912,5 +959,5 @@
         return out;
     }
 
-    return { overrideId, perServerFields, perServerRows, perServerPatch, perServerOverview, healthForm, healthPatch, signalText, healthNow, suggestTarget, licenceView, activationBundle, tlsView, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES, HEALTH_DEFAULTS };
+    return { networkServices, overrideId, perServerFields, perServerRows, perServerPatch, perServerOverview, healthForm, healthPatch, signalText, healthNow, suggestTarget, licenceView, activationBundle, tlsView, syncPlan, settingsForm, settingsPatch, servers, summary, switchTargets, mergeEvents, describeEvent, instanceRows, exclusiveResource, hotCheck, readiness, adapterDiff, settingsView, MODES, HEALTH_DEFAULTS };
 });

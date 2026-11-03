@@ -13,7 +13,7 @@ const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
 const { installedAdapters } = require('./lib/installed');
 const { checkPaths, listFiles, diff, writeFile } = require('./lib/syncfiles');
-const { healthConfig, parseTarget, Tracker, summarize } = require('./lib/health');
+const { healthConfig, parseTarget, Tracker, summarize, webExtension } = require('./lib/health');
 const { tcpProbe } = require('./lib/probe');
 const { InstanceCache } = require('./lib/instances');
 
@@ -129,7 +129,9 @@ class Redundancy extends utils.Adapter {
             .filter(o => /^(cold|hot)$/.test(o.common?.redundancy?.mode) && !/^system\.adapter\.redundancy\.\d+$/.test(o._id))
             .map(o => ({
                 id: o._id.replace(/^system\.adapter\./, ''),
-                here: o.common.host === this.host && o.common.enabled === true,
+                // a web extension (native.webInstance) ends itself and runs inside its web
+                // instance: it is never alive, its health is the web instance's (lab 2026-11-03)
+                here: o.common.host === this.host && o.common.enabled === true && !webExtension(o),
                 cfg: healthConfig(o.common.redundancy),
             }));
         this.health.others = objs

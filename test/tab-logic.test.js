@@ -122,6 +122,48 @@ test('the instances table: every instance but the redundancy ones, with its mode
     );
 });
 
+test('every instance that listens on its own port must follow the primary (Kamran 2026-11-03)', () => {
+    const inst = (id, host, native, redundancy, enabled = true) => ({ _id: `system.adapter.${id}`, common: { host, enabled, redundancy }, native });
+    const list = [
+        { iobHost: 'iobA', name: 'A', config: { hosts: [{ name: 'A', redis: '192.168.64.11:6379' }, { name: 'B', redis: '192.168.64.12:6379' }] } },
+        { iobHost: 'iobB', name: 'B', config: {} },
+    ];
+    const w = L.networkServices(
+        [
+            inst('redundancy.0', 'iobA', { port: 0 }),
+            // one admin per server: it is on every server already
+            inst('admin.0', 'iobA', { port: 8081, bind: '0.0.0.0' }),
+            inst('admin.1', 'iobB', { port: 8081, bind: '0.0.0.0' }),
+            inst('web.0', 'iobB', { port: 8082, bind: '0.0.0.0' }, { mode: 'cold' }),
+            // stays on A: not at the cluster address after a switch
+            inst('mqtt.0', 'iobA', { port: 1883, bind: '0.0.0.0' }),
+            // disabled: told too, it would start on A when enabled
+            inst('ws.0', 'iobA', { port: 8084, bind: '0.0.0.0' }, undefined, false),
+            // served by web.0: no port of its own
+            inst('simple-api.0', 'iobA', { port: 8087, bind: '0.0.0.0', webInstance: '*' }),
+            // a client: the port is its server's (no bind)
+            inst('influxdb.0', 'iobA', { port: 8086, host: '127.0.0.1' }),
+            // an OPC UA server has no bind setting
+            inst('opcua.0', 'iobA', { port: 4334 }),
+            // follows the primary, but listens only on B's own address
+            inst('node-red.0', 'iobB', { port: 1880, bind: '192.168.64.12' }, { mode: 'cold' }),
+        ],
+        list,
+    );
+    assert.deepStrictEqual(
+        w.map(x => [x.id, x.kind]),
+        [
+            ['mqtt.0', 'stays'],
+            ['node-red.0', 'bind'],
+            ['opcua.0', 'stays'],
+            ['ws.0', 'stays'],
+        ],
+    );
+    assert.match(w[0].text, /mqtt\.0 listens on port 1883 but stays on iobA/);
+    assert.match(w[1].text, /node-red\.0 listens only on 192\.168\.64\.12, an address of one server/);
+    assert.match(w[3].text, /disabled/);
+});
+
 test('a line only one server may drive is found in the instance settings', () => {
     const r = native => L.exclusiveResource(native);
     assert.deepStrictEqual(r({ params: { type: 'serial', comName: '/dev/ttyS0', bind: '0.0.0.0', port: 502 } }), { kind: 'serial', text: 'serial line /dev/ttyS0' });
