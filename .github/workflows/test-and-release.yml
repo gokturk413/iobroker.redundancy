@@ -58,7 +58,14 @@ jobs:
           ENGINE_TAG: ${{ github.event.client_payload.version || inputs.engine || '' }}
         run: |
           [ -n "$GH_TOKEN" ] || { echo "::error::the ENGINE_ASSETS_TOKEN secret is missing"; exit 1; }
-          for rid in win-x64 linux-x64 linux-arm64 osx-arm64 osx-x64; do
+          # macOS is built by hand only until the first full release (~January 2027): an engine
+          # release without osx-* assets publishes Windows and Linux; with them, all five
+          assets="$(gh release view $ENGINE_TAG --repo "$ENGINE_REPO" --json assets -q '.assets[].name')"
+          rids="win-x64 linux-x64 linux-arm64"
+          if echo "$assets" | grep -qx 'redundancy-osx-arm64.node.gz'; then rids="$rids osx-arm64 osx-x64"
+          else echo "::warning::engine release without macOS binaries: the package has no osx-* engine"; fi
+          echo "$rids" | wc -w > prebuilds.count
+          for rid in $rids; do
             exe=""; [ "${rid#win-}" != "$rid" ] && exe=.exe
             dir="prebuilds/$rid"; rm -rf "$dir"; mkdir -p "$dir"
             gh release download $ENGINE_TAG --repo "$ENGINE_REPO" --dir "$dir" --clobber \
@@ -73,7 +80,8 @@ jobs:
         run: |
           extra="$(find prebuilds -type f ! -name 'redundancy.node.gz' ! -name 'redundancy-watchdog.gz' ! -name 'redundancy-watchdog.exe.gz')"
           [ -z "$extra" ] || { echo "not allowed in the package:"; echo "$extra"; exit 1; }
-          [ "$(find prebuilds -name '*.gz' | wc -l)" = 10 ] || { echo "expected 10 files (5 platforms x 2)"; exit 1; }
+          n=$(( $(cat prebuilds.count) * 2 )); rm -f prebuilds.count
+          [ "$(find prebuilds -name '*.gz' | wc -l)" = "$n" ] || { echo "expected $n files (2 per platform)"; exit 1; }
           npm pack --dry-run --json | node -e "
             const files = JSON.parse(require('fs').readFileSync(0, 'utf8'))[0].files.map(f => f.path);
             const bad = files.filter(f => f.startsWith('prebuilds/') && !f.endsWith('.gz'));
