@@ -319,6 +319,19 @@
       "native": {}
     },
     {
+      "_id": "container",
+      "type": "state",
+      "common": {
+        "role": "indicator",
+        "name": "ioBroker runs in a container on this host (adapters come with its image)",
+        "type": "boolean",
+        "read": true,
+        "write": false,
+        "def": false
+      },
+      "native": {}
+    },
+    {
       "_id": "links",
       "type": "state",
       "common": {

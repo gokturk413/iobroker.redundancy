@@ -11,7 +11,7 @@ const bridge = require('./lib/nativeBridge');
 const { statusToStates, installCommand, STALE_MS, parseSwitchCommand, parseSettingsMessage, settingsSender } = require('./lib/status');
 const { reconcile, instanceFromObject, pairHosts } = require('./lib/moves');
 const { WatchdogClient, defaultApiPath, request, pushEvent } = require('./lib/api');
-const { installedAdapters } = require('./lib/installed');
+const { installedAdapters, inContainer } = require('./lib/installed');
 const { checkPaths, listFiles, diff, writeFile } = require('./lib/syncfiles');
 const { healthConfig, parseTarget, Tracker, summarize, webExtension } = require('./lib/health');
 const { tcpProbe } = require('./lib/probe');
@@ -294,6 +294,8 @@ class Redundancy extends utils.Adapter {
 
     async writeInstalled() {
         await this.setStateAsync('installedAdapters', JSON.stringify(this.installed()), true);
+        // the Sync tab does not install adapters into a container (its image is rebuilt instead)
+        await this.setStateAsync('container', inContainer(), true);
     }
 
     /**

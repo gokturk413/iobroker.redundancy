@@ -5,7 +5,21 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { installedAdapters, differences } = require('../lib/installed');
+const { installedAdapters, differences, inContainer } = require('../lib/installed');
+
+test('inContainer: docker, podman, containerd and a plain host', () => {
+    const io = (files, cgroup = '0::/init.scope', env = {}) => ({
+        exists: p => files.includes(p),
+        read: () => cgroup,
+        env,
+    });
+    assert.strictEqual(inContainer(io(['/.dockerenv'])), true, 'docker');
+    assert.strictEqual(inContainer(io(['/run/.containerenv'])), true, 'podman');
+    assert.strictEqual(inContainer(io([], '0::/system.slice/containerd.service/kubepods-x')), true, 'kubernetes');
+    assert.strictEqual(inContainer(io([], '', { container: 'oci' })), true, 'the container env of systemd/podman');
+    assert.strictEqual(inContainer(io([])), false, 'a plain host');
+    assert.strictEqual(inContainer({ exists: () => false, read: () => { throw new Error('no /proc'); }, env: {} }), false, 'no /proc (Windows)');
+});
 
 function nodeModules(pkgs) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nm-'));

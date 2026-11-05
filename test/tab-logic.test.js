@@ -340,6 +340,20 @@ test('sync: a name or version that is not plain is never put into a command', ()
     assert.deepStrictEqual(p.refused.sort(), ['web', 'x;rm -rf /']);
 });
 
+test('sync: a server in a container gets the image rebuild, never an install', () => {
+    // in a container an install reaches only that container and is lost when it is recreated
+    const src = { name: 'A', installed: { mywebui: '1.207.12', modbus: '6.3.2' } };
+    const dst = { name: 'B', container: true, installed: { mywebui: '1.207.11', modbus: '6.3.2' } };
+    const p = L.syncPlan(src, dst);
+    assert.strictEqual(p.container, true);
+    assert.deepStrictEqual(p.steps, [
+        { adapter: 'mywebui', have: '1.207.11', want: '1.207.12', cmd: null, rebuild: 'lab/h0-vm/upgrade-adapter.sh mywebui 1.207.12' },
+    ]);
+    assert.strictEqual(L.syncPlan(src, { ...dst, container: false }).container, undefined, 'a host without a container: installs as before');
+    const servers = L.servers([{ n: '0', host: 'h1' }], { 'redundancy.0.container': st(true), 'redundancy.0.watchdogHost': st('A') });
+    assert.strictEqual(servers[0].container, true, 'the container state reaches the tab');
+});
+
 test('licence: each server says its state and what to do', () => {
     const info = (state, extra = {}) => st(JSON.stringify({ state, valid: state === 'valid', stops: state === 'trial-expired', message: `m-${state}`, hardwareIds: ['hw3-x'], ...extra }));
     const list = pair({ 'redundancy.0.license.info': info('valid', { licenseId: 'R-1', owner: 'Plant Ltd', maxServers: 2 }), 'redundancy.1.license.info': info('trial', { daysLeft: 9 }) });

@@ -938,12 +938,18 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         if (p.extra.length) {
             lines.push(`<li>only on ${esc(dst.name)}, left alone: ${esc(p.extra.join(', '))}</li>`);
         }
+        if (p.container && p.steps.length) {
+            // in a container an install reaches only that container and is lost when it is recreated
+            lines.push(`<li class="badc">${esc(dst.name)} runs ioBroker in a container: adapters come with its image, an install here would be lost. Upgrade every server's image from the PC instead:</li>`);
+            p.steps.forEach(x => lines.push(`<li style="font-family: var(--mono); list-style: none">${esc(x.rebuild)}</li>`));
+        }
         $('syncdiff').innerHTML = !adapters
             ? '<span class="dim">adapters not chosen</span>'
             : p.steps.length || lines.length
                 ? `<ul style="margin: 0; padding-left: 18px">${lines.join('')}</ul>`
                 : `<span class="good">${esc(dst.name)} has every adapter of ${esc(src.name)} in its version</span>`;
-        $('syncgo').disabled = syncing || !dst.connected || !(p.steps.length || $('syncfiles').checked);
+        const runnable = p.container ? 0 : p.steps.length;
+        $('syncgo').disabled = syncing || !dst.connected || !(runnable || $('syncfiles').checked);
         $('syncgo').textContent = $('syncdry').checked ? `Show what ${dst.name} would run` : `Sync to ${dst.name}`;
         return { src, dst, plan: p };
     }
@@ -1000,7 +1006,10 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
         $('syncout').textContent = '';
         const dry = $('syncdry').checked;
         if (dry) {
-            if (s.plan.steps.length) {
+            if (s.plan.steps.length && s.plan.container) {
+                syncLog(`${s.dst.name} runs in a container: nothing is installed there. On the PC:`);
+                s.plan.steps.forEach(x => syncLog(`  ${x.rebuild}`));
+            } else if (s.plan.steps.length) {
                 syncLog(`Dry run: ${s.dst.name} (${s.dst.iobHost}) would run`);
                 s.plan.steps.forEach(x => syncLog(`  ${x.cmd}`));
             }
@@ -1019,7 +1028,11 @@ label.check { display: flex; align-items: center; gap: 10px; min-height: 40px; }
             if (s.dst.role === 'primary') {
                 syncLog(`Note: ${s.dst.name} is the primary; an upgrade restarts the instances of that adapter there.`);
             }
-            for (const x of s.plan.steps) {
+            if (s.plan.container && s.plan.steps.length) {
+                syncLog(`${s.dst.name} runs in a container: adapters not installed there (lost on recreate). On the PC:`);
+                s.plan.steps.forEach(x => syncLog(`  ${x.rebuild}`));
+            }
+            for (const x of s.plan.container ? [] : s.plan.steps) {
                 syncLog(`\n$ ${x.cmd}   (on ${s.dst.iobHost})`);
                 const code = await runOnHost(s.dst.iobHost, x.cmd);
                 syncLog(code === 0 ? `done: ${x.adapter} ${x.want}` : `FAILED (${code === -1 ? 'no answer in 15 min' : `exit ${code}`}): ${x.adapter}`);

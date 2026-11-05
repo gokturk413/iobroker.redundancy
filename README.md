@@ -72,6 +72,13 @@ closed-source engine and are proprietary.
 
 ## Changelog
 
+### **WORK IN PROGRESS**
+
+- Sync tab: a server that runs ioBroker in a container (docker, podman) gets no adapter install
+  (it would reach only that container and be lost when it is recreated); the tab names the image
+  rebuild instead (`lab/h0-vm/upgrade-adapter.sh <adapter> <version>`, every server at once).
+  New state `container`. Local files sync is unchanged.
+
 ### 0.0.1
 
 - First build: the native engine for Linux, Windows and macOS (x64, arm64); the adapter

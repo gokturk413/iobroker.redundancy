@@ -52,6 +52,7 @@
                     engine: String(val('engineVersion') || ''),
                     maintenanceUntil: Number(val('maintenanceUntil')) || 0,
                     installed: parseMap(val('installedAdapters')),
+                    container: val('container') === true,
                     config: parseMap(val('watchdogConfig')),
                     links: parseList(val('links')),
                     clientList: parseList(val('clientOptions')),
@@ -521,6 +522,9 @@
      * Sync: the commands the target host runs (cmdExec, as the admin's adapter installs do)
      * so that it has every adapter of the source in the source's version. Adapters only on the
      * target are left alone; a name or version that is not plain is refused, never run.
+     * A target that runs ioBroker in a container gets no command (an install there reaches only
+     * that container and is lost when it is recreated): `container` is set and each step names
+     * the image rebuild instead (`rebuild`: lab/h0-vm/upgrade-adapter.sh, every server at once).
      */
     function syncPlan(source, target) {
         const steps = [];
@@ -534,10 +538,15 @@
                 refused.push(a);
                 continue;
             }
-            steps.push({ adapter: a, have, want: v, cmd: have ? `iobroker upgrade ${a}@${v} -y` : `iobroker install ${a}@${v}` });
+            const step = { adapter: a, have, want: v, cmd: have ? `iobroker upgrade ${a}@${v} -y` : `iobroker install ${a}@${v}` };
+            if (target.container) {
+                step.cmd = null;
+                step.rebuild = `lab/h0-vm/upgrade-adapter.sh ${a} ${v}`;
+            }
+            steps.push(step);
         }
         const extra = Object.keys(target.installed).filter(a => !(a in source.installed)).sort();
-        return { steps, extra, refused };
+        return target.container ? { steps, extra, refused, container: true } : { steps, extra, refused };
     }
 
     /** The Licence card: each server's licence as its watchdog checked it. */
